@@ -25,7 +25,7 @@ class CfgFunctions {
             class pauseCommander {};
             class resumeCommander {};
             class drawCommanderDebug {};
+            class startDebugScheduler {};
         };
     };
 };
-

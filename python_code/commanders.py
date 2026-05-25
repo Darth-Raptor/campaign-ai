@@ -200,7 +200,12 @@ def _assign_order(
     }
     group["assignedOrder"] = order
     group["status"] = order_type
-    if order_type in config.ALLOWED_ORDER_TYPES:
-        group["currentObjectiveId"] = str(objective.get("objectiveId", group.get("currentObjectiveId", "")))
+    group["targetObjectiveId"] = str(objective.get("objectiveId", ""))
+    group["targetPosition"] = list(objective.get("position", [0, 0, 0]))
+    group["currentOrderType"] = order_type
+    group["distanceToTarget"] = round(
+        virtual_groups.distance_2d(list(group.get("position", [0, 0, 0])), order["targetPosition"]),
+        2,
+    )
+    group["movementState"] = "ARRIVED" if group["distanceToTarget"] <= 5 else "MOVING"
     return order
-

@@ -114,5 +114,6 @@ if (!isServer) exitWith {};
         };
     };
 
+    [] call CAI_fnc_startDebugScheduler;
     [] call CAI_fnc_startCommanderScheduler;
 };

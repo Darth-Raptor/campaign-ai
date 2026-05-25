@@ -95,6 +95,29 @@ def sample_payload():
     ]
 
 
+def movement_payload():
+    payload = sample_payload()
+    red_group = payload[5][1][0]
+    for item in red_group:
+        if item[0] == "mobility":
+            item[1] = "motorized"
+            break
+    red_group.append(
+        [
+            "assignedOrder",
+            [
+                ["orderId", "ord_test_move"],
+                ["groupId", "grp_red_001"],
+                ["orderType", "ATTACK"],
+                ["targetObjectiveId", "obj_blue"],
+                ["targetPosition", [1000, 0, 0]],
+                ["expiresAt", 1000],
+            ],
+        ]
+    )
+    return payload
+
+
 class PythonApiTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -144,6 +167,27 @@ class PythonApiTests(unittest.TestCase):
         debug_payload = dict(debug_response[2])
         self.assertEqual(len(debug_payload["objectives"]), 2)
 
+    def test_debug_snapshot_advances_virtual_movement(self):
+        self.assertTrue(self.api.init_state(movement_payload())[0])
+
+        first_response = self.api.get_debug_snapshot([["debugMode", "BOTH"], ["gameTime", 100]])
+        self.assertTrue(first_response[0], first_response)
+        first_payload = dict(first_response[2])
+        first_group = dict(first_payload["groups"][0])
+        self.assertEqual(first_group["movementState"], "MOVING")
+        self.assertEqual(first_group["currentOrderType"], "ATTACK")
+        self.assertEqual(first_group["targetObjectiveId"], "obj_blue")
+        self.assertAlmostEqual(first_group["position"][0], 600.0, delta=0.01)
+        self.assertAlmostEqual(first_group["distanceToTarget"], 400.0, delta=0.01)
+
+        second_response = self.api.get_debug_snapshot([["debugMode", "BOTH"], ["gameTime", 200]])
+        self.assertTrue(second_response[0], second_response)
+        second_payload = dict(second_response[2])
+        second_group = dict(second_payload["groups"][0])
+        self.assertEqual(second_group["movementState"], "ARRIVED")
+        self.assertEqual(second_group["currentObjectiveId"], "obj_blue")
+        self.assertAlmostEqual(second_group["position"][0], 1000.0, delta=0.01)
+
     def test_combat_resolution_updates_state(self):
         self.assertTrue(self.api.init_state(sample_payload())[0])
 
@@ -172,4 +216,3 @@ class PythonApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

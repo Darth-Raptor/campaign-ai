@@ -25,6 +25,7 @@ CAI_lastCommanderCycle = 0;
 CAI_lastPythonCall = "";
 CAI_lastPythonStatus = "";
 CAI_lastPythonError = "";
+CAI_debugSchedulerStarted = false;
 
 CAI_objectiveMirror = createHashMap;
 CAI_virtualGroupMirror = createHashMap;
@@ -34,4 +35,3 @@ CAI_observedEvents = [];
 CAI_lastCombatResults = [];
 
 ["[CAI CORE]", "Campaign AI core initialized."] call CAI_fnc_log;
-

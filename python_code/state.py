@@ -101,6 +101,7 @@ def get_state_summary() -> dict[str, Any]:
         "virtualGroupCount": len(groups),
         "combatHistoryCount": len(campaign.combat_history),
         "lastSaveTime": campaign.last_save_time,
+        "lastUpdateTime": campaign.last_update_time,
         "systemsEnabled": campaign.initialized,
         "featureFlags": {
             "backendEnabled": False,
@@ -179,6 +180,9 @@ def get_debug_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     campaign = ensure_initialized()
     mode = payload.get("debugMode", "BOTH")
     commander_id = payload.get("commanderId", "")
+    from . import virtual_groups
+
+    movement_logs = virtual_groups.update_virtual_positions(float(payload.get("gameTime", 0) or 0))
     knowledge = []
     if mode in {"BOTH", "COMMANDER_KNOWLEDGE"}:
         if commander_id:
@@ -196,6 +200,6 @@ def get_debug_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         "commanders": [deepcopy(item) for item in campaign.commanders.values()],
         "knowledge": knowledge,
         "combatHistory": deepcopy(campaign.combat_history[-20:]),
+        "movementLogs": movement_logs,
         "summary": get_state_summary(),
     }
-
