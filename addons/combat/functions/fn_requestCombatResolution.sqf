@@ -1,6 +1,7 @@
 params [
     ["_engagements", [], [[]]],
-    ["_autoDetect", false, [true]]
+    ["_autoDetect", false, [true]],
+    ["_randomness", "NORMAL", [""]]
 ];
 
 if (!isServer || {!CAI_systemsEnabled}) exitWith {
@@ -9,16 +10,13 @@ if (!isServer || {!CAI_systemsEnabled}) exitWith {
 
 private _safeEngagements = [];
 if (_autoDetect) then {
-    ["[CAI COMBAT]", "Auto-detect requested. V1.0 only resolves engagements after SQF player-proximity filtering. Provide explicit engagement payloads."] call CAI_fnc_log;
+    _engagements append ([] call CAI_fnc_detectCombatEngagements);
 };
 
 {
-    private _position = [_x, "position", [0, 0, 0]] call CAI_fnc_getKV;
-    private _playersNearby = ({(_x distance2D _position) < 1000} count allPlayers) > 0;
-    if (_playersNearby) then {
-        ["[CAI COMBAT]", "Skipped virtual combat because players are nearby."] call CAI_fnc_log;
-    } else {
-        _safeEngagements pushBack (_x + [["playersNearby", false]]);
+    private _validated = [_x, CAI_combatPlayerProximityRadius] call CAI_fnc_validateCombatEngagement;
+    if ((_validated select 0) isEqualTo true) then {
+        _safeEngagements pushBack (_validated select 1);
     };
 } forEach _engagements;
 
@@ -26,7 +24,7 @@ private _payload = [
     ["gameTime", [] call CAI_fnc_getTime],
     ["engagements", _safeEngagements],
     ["autoDetect", false],
-    ["randomness", "NORMAL"]
+    ["randomness", _randomness]
 ];
 
 private _response = ["CAIPython.api.resolve_combat_batch", [_payload], false] call CAI_fnc_pyCall;
@@ -35,7 +33,7 @@ if ((_response select 0) isEqualTo true) then {
     private _results = [_payloadOut, "results", []] call CAI_fnc_getKV;
     private _accepted = [];
     {
-        if ([_x] call CAI_fnc_validateCombatResult) then {
+        if ([_x, CAI_combatPlayerProximityRadius] call CAI_fnc_validateCombatResult) then {
             _accepted pushBack _x;
         };
     } forEach _results;

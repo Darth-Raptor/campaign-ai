@@ -98,10 +98,7 @@ def sample_payload():
 def movement_payload():
     payload = sample_payload()
     red_group = payload[5][1][0]
-    for item in red_group:
-        if item[0] == "mobility":
-            item[1] = "motorized"
-            break
+    set_kv(red_group, "mobility", "motorized")
     red_group.append(
         [
             "assignedOrder",
@@ -116,6 +113,29 @@ def movement_payload():
         ]
     )
     return payload
+
+
+def combat_payload():
+    payload = sample_payload()
+    obj_blue = payload[3][1][1]
+    red_group = payload[5][1][0]
+    blue_group = payload[5][1][1]
+
+    set_kv(obj_blue, "position", [3400, 0, 0])
+    set_kv(obj_blue, "control", 50)
+    set_kv(red_group, "strength", 120)
+    set_kv(red_group, "position", [3000, 0, 0])
+    set_kv(blue_group, "strength", 40)
+    set_kv(blue_group, "position", [3400, 0, 0])
+    return payload
+
+
+def set_kv(items, key, value):
+    for item in items:
+        if item[0] == key:
+            item[1] = value
+            return
+    items.append([key, value])
 
 
 class PythonApiTests(unittest.TestCase):
@@ -189,7 +209,7 @@ class PythonApiTests(unittest.TestCase):
         self.assertAlmostEqual(second_group["position"][0], 1000.0, delta=0.01)
 
     def test_combat_resolution_updates_state(self):
-        self.assertTrue(self.api.init_state(sample_payload())[0])
+        self.assertTrue(self.api.init_state(combat_payload())[0])
 
         response = self.api.resolve_combat_batch(
             [
@@ -201,17 +221,71 @@ class PythonApiTests(unittest.TestCase):
                             ["attackerGroupId", "grp_red_001"],
                             ["defenderGroupId", "grp_blue_001"],
                             ["objectiveId", "obj_blue"],
+                            ["position", [3400, 0, 0]],
                             ["playersNearby", False],
                         ]
                     ],
                 ],
                 ["autoDetect", False],
-                ["randomness", "LOW"],
+                ["randomness", "NONE"],
             ]
         )
         self.assertTrue(response[0], response)
         payload = dict(response[2])
         self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(len(payload["skipped"]), 0)
+
+        result = dict(payload["results"][0])
+        self.assertEqual(result["outcome"], "ATTACKER_VICTORY")
+        self.assertEqual(result["objectiveControlDelta"], 45)
+        self.assertTrue(result["combatReport"])
+
+        group_updates = {dict(item)["groupId"]: dict(item) for item in result["groupUpdates"]}
+        self.assertEqual(group_updates["grp_red_001"]["strength"], 106)
+        self.assertEqual(group_updates["grp_blue_001"]["strength"], 30)
+        self.assertEqual(group_updates["grp_red_001"]["readiness"], 88)
+        self.assertEqual(group_updates["grp_blue_001"]["morale"], 85)
+
+        objective_update = dict(result["objectiveUpdate"])
+        self.assertEqual(objective_update["objectiveId"], "obj_blue")
+        self.assertEqual(objective_update["owner"], "EAST")
+        self.assertEqual(objective_update["control"], 95)
+
+        summary = dict(payload["summary"])
+        self.assertEqual(summary["combatHistoryCount"], 1)
+
+        debug_response = self.api.get_debug_snapshot([["debugMode", "BOTH"], ["gameTime", 240]])
+        self.assertTrue(debug_response[0], debug_response)
+        debug_payload = dict(debug_response[2])
+        self.assertEqual(len(debug_payload["combatHistory"]), 1)
+
+    def test_combat_resolution_skips_player_near_engagement(self):
+        self.assertTrue(self.api.init_state(combat_payload())[0])
+
+        response = self.api.resolve_combat_batch(
+            [
+                ["gameTime", 240],
+                [
+                    "engagements",
+                    [
+                        [
+                            ["attackerGroupId", "grp_red_001"],
+                            ["defenderGroupId", "grp_blue_001"],
+                            ["objectiveId", "obj_blue"],
+                            ["position", [3400, 0, 0]],
+                            ["playersNearby", True],
+                        ]
+                    ],
+                ],
+                ["autoDetect", False],
+                ["randomness", "NONE"],
+            ]
+        )
+        self.assertTrue(response[0], response)
+        payload = dict(response[2])
+        self.assertEqual(len(payload["results"]), 0)
+        self.assertEqual(len(payload["skipped"]), 1)
+        self.assertEqual(dict(payload["summary"])["combatHistoryCount"], 0)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,15 @@
 briefingName = "Campaign AI V1 Smoke Test";
-overviewText = "Minimal Campaign AI V1.0 smoke-test fixture for listen, local dedicated, and HostHavoc validation.";
+overviewText = "Centered Campaign AI V1.0 smoke-test fixture for movement and offscreen combat validation.";
 author = "Campaign AI";
+
+class Header
+{
+    gameType = Coop;
+    minPlayers = 1;
+    maxPlayers = 1;
+};
 
 respawn = 3;
 respawnDelay = 5;
 disabledAI = 1;
 enableDebugConsole = 1;
-

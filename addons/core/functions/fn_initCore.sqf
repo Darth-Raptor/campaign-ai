@@ -13,6 +13,8 @@ if (isNil "CAI_debugEnabled") then { CAI_debugEnabled = false; };
 if (isNil "CAI_debugMode") then { CAI_debugMode = "BOTH"; };
 if (isNil "CAI_debugCommanderFilter") then { CAI_debugCommanderFilter = ""; };
 if (isNil "CAI_markerRefreshInterval") then { CAI_markerRefreshInterval = 30; };
+if (isNil "CAI_combatPlayerProximityRadius") then { CAI_combatPlayerProximityRadius = 1000; };
+if (isNil "CAI_combatAutoDetectRadius") then { CAI_combatAutoDetectRadius = 500; };
 
 CAI_moduleObjectives = [];
 CAI_moduleCommanders = [];

@@ -13,6 +13,7 @@ CAI_objectiveMirror = createHashMap;
         ["objectiveType", _x getVariable ["CAI_objectiveType", "generic"]],
         ["initialOwner", _x getVariable ["CAI_initialOwner", "UNKNOWN"]],
         ["owner", _x getVariable ["CAI_initialOwner", "UNKNOWN"]],
+        ["control", _x getVariable ["CAI_control", 100]],
         ["priority", _x getVariable ["CAI_priority", 50]],
         ["radius", _x getVariable ["CAI_radius", 300]],
         ["size", _x getVariable ["CAI_size", "medium"]],
@@ -28,4 +29,3 @@ CAI_objectiveMirror = createHashMap;
 
 ["[CAI OBJ]", format ["Collected %1 objective module(s).", count _objectives]] call CAI_fnc_log;
 _objectives
-

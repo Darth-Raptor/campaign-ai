@@ -7,7 +7,7 @@ import random
 from typing import Any
 
 from . import config, state
-from .schemas import ValidationError, from_sqf, normalize_combat_payload
+from .schemas import ValidationError, as_bool, as_position, from_sqf, normalize_combat_payload
 
 
 def resolve_combat_batch(payload: Any) -> dict[str, Any]:
@@ -17,22 +17,82 @@ def resolve_combat_batch(payload: Any) -> dict[str, Any]:
     if data["autoDetect"]:
         engagements = engagements + _auto_detect_engagements()
     results = []
+    skipped = []
     logs = []
     for raw in engagements:
-        engagement = from_sqf(raw)
-        if not isinstance(engagement, dict):
+        try:
+            engagement = _normalize_engagement(raw)
+        except ValidationError as exc:
+            skipped.append(_skip_report(raw, str(exc)))
+            logs.append(f"Skipped malformed engagement: {exc}")
             continue
-        if bool(engagement.get("playersNearby", False)):
-            logs.append("Skipped engagement because SQF reported players nearby")
+
+        if engagement["playersNearby"]:
+            skipped.append(_skip_report(engagement, "players nearby"))
+            logs.append(
+                "Skipped engagement "
+                f"{engagement['attackerGroupId']} vs {engagement['defenderGroupId']} because SQF reported players nearby"
+            )
             continue
-        result = _resolve_single(engagement, data["randomness"], data["gameTime"])
+
+        try:
+            result = _resolve_single(engagement, data["randomness"], data["gameTime"])
+        except ValidationError as exc:
+            skipped.append(_skip_report(engagement, str(exc)))
+            logs.append(
+                "Skipped engagement "
+                f"{engagement['attackerGroupId']} vs {engagement['defenderGroupId']}: {exc}"
+            )
+            continue
+
         results.append(result)
         campaign.combat_history.append(result)
     return {
         "gameTime": data["gameTime"],
         "results": results,
+        "skipped": skipped,
         "logs": logs,
         "summary": state.get_state_summary(),
+    }
+
+
+def _normalize_engagement(raw: Any) -> dict[str, Any]:
+    data = from_sqf(raw)
+    if not isinstance(data, dict):
+        raise ValidationError("Combat engagement must be a mapping or SQF key/value array")
+
+    attacker_id = str(data.get("attackerGroupId", "")).strip()
+    defender_id = str(data.get("defenderGroupId", "")).strip()
+    if not attacker_id or not defender_id:
+        raise ValidationError("Combat engagement requires attackerGroupId and defenderGroupId")
+    if attacker_id == defender_id:
+        raise ValidationError("Combat engagement attacker and defender must be different groups")
+
+    return {
+        "attackerGroupId": attacker_id,
+        "defenderGroupId": defender_id,
+        "objectiveId": str(data.get("objectiveId", "")).strip(),
+        "position": _optional_position(data.get("position")),
+        "playersNearby": as_bool(data.get("playersNearby", False)),
+    }
+
+
+def _optional_position(value: Any) -> list[float]:
+    raw = from_sqf(value)
+    if isinstance(raw, list) and len(raw) >= 2:
+        return as_position(raw)
+    return []
+
+
+def _skip_report(raw: Any, reason: str) -> dict[str, Any]:
+    data = from_sqf(raw)
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "attackerGroupId": str(data.get("attackerGroupId", "")),
+        "defenderGroupId": str(data.get("defenderGroupId", "")),
+        "objectiveId": str(data.get("objectiveId", "")),
+        "reason": reason,
     }
 
 
@@ -40,11 +100,11 @@ def _auto_detect_engagements() -> list[dict[str, Any]]:
     campaign = state.ensure_initialized()
     groups = list(campaign.virtual_groups.values())
     engagements: list[dict[str, Any]] = []
-    for attacker in groups:
+    for index, attacker in enumerate(groups):
         if attacker.get("strength", 0) <= 0:
             continue
-        for defender in groups:
-            if attacker is defender or defender.get("strength", 0) <= 0:
+        for defender in groups[index + 1 :]:
+            if defender.get("strength", 0) <= 0:
                 continue
             if attacker.get("side") == defender.get("side"):
                 continue
@@ -54,6 +114,11 @@ def _auto_detect_engagements() -> list[dict[str, Any]]:
                         "attackerGroupId": attacker["groupId"],
                         "defenderGroupId": defender["groupId"],
                         "objectiveId": attacker.get("currentObjectiveId") or defender.get("currentObjectiveId", ""),
+                        "position": _midpoint(
+                            attacker.get("position", [0, 0, 0]),
+                            defender.get("position", [0, 0, 0]),
+                        ),
+                        "playersNearby": False,
                     }
                 )
                 break
@@ -73,12 +138,20 @@ def _resolve_single(engagement: dict[str, Any], randomness: str, game_time: floa
 
     objective_id = str(engagement.get("objectiveId", ""))
     objective = campaign.objectives.get(objective_id) if objective_id else None
+    if objective_id and not objective:
+        raise ValidationError(f"Combat engagement references unknown objective: {objective_id}")
+
+    position = engagement.get("position") or _engagement_position(attacker, defender, objective)
 
     attacker_power = _combat_power(attacker, "ATTACK", objective, randomness)
     defender_power = _combat_power(defender, "DEFEND", objective, randomness)
     ratio = attacker_power / max(0.01, defender_power)
     outcome = _outcome_for_ratio(ratio)
     losses = _losses_for_outcome(outcome)
+
+    attacker_before = _group_update(attacker)
+    defender_before = _group_update(defender)
+    objective_before = _objective_update(objective) if objective else {}
 
     _apply_group_damage(attacker, losses["attackerLossPercent"], losses["attackerReadinessDelta"], losses["attackerMoraleDelta"])
     _apply_group_damage(defender, losses["defenderLossPercent"], losses["defenderReadinessDelta"], losses["defenderMoraleDelta"])
@@ -93,6 +166,7 @@ def _resolve_single(engagement: dict[str, Any], randomness: str, game_time: floa
         "engagementId": state.next_engagement_id(),
         "gameTime": game_time,
         "objectiveId": objective_id,
+        "position": position,
         "attackerGroupId": attacker_id,
         "defenderGroupId": defender_id,
         "attackerPower": round(attacker_power, 2),
@@ -106,7 +180,20 @@ def _resolve_single(engagement: dict[str, Any], randomness: str, game_time: floa
         "attackerMoraleDelta": losses["attackerMoraleDelta"],
         "defenderMoraleDelta": losses["defenderMoraleDelta"],
         "objectiveControlDelta": losses["objectiveControlDelta"],
-        "generatedContactReports": [],
+        "attackerBefore": attacker_before,
+        "defenderBefore": defender_before,
+        "objectiveBefore": objective_before,
+        "groupUpdates": [_group_update(attacker), _group_update(defender)],
+        "objectiveUpdate": _objective_update(objective) if objective else {},
+        "generatedContactReports": [
+            {
+                "type": "COMBAT_RESOLVED",
+                "objectiveId": objective_id,
+                "position": position,
+                "summary": f"{attacker_id} vs {defender_id}: {outcome}",
+            }
+        ],
+        "combatReport": _combat_report(attacker_id, defender_id, objective_id, outcome, losses),
         "reason": _reason(attacker, defender, objective, outcome),
     }
 
@@ -166,6 +253,64 @@ def _apply_group_damage(group: dict[str, Any], loss_percent: int, readiness_delt
     group["morale"] = max(0, min(100, float(group.get("morale", 100)) + morale_delta))
 
 
+def _group_update(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "groupId": str(group.get("groupId", "")),
+        "side": str(group.get("side", "UNKNOWN")),
+        "strength": int(max(0, round(float(group.get("strength", 0))))),
+        "readiness": round(max(0, min(100, float(group.get("readiness", 100)))), 2),
+        "morale": round(max(0, min(100, float(group.get("morale", 100)))), 2),
+        "position": list(group.get("position", [0, 0, 0])),
+        "currentObjectiveId": str(group.get("currentObjectiveId", "")),
+        "status": str(group.get("status", "IDLE")),
+    }
+
+
+def _objective_update(objective: dict[str, Any] | None) -> dict[str, Any]:
+    if not objective:
+        return {}
+    return {
+        "objectiveId": str(objective.get("objectiveId", "")),
+        "owner": str(objective.get("owner", "UNKNOWN")),
+        "control": round(max(0, min(100, float(objective.get("control", 50)))), 2),
+    }
+
+
+def _engagement_position(
+    attacker: dict[str, Any],
+    defender: dict[str, Any],
+    objective: dict[str, Any] | None,
+) -> list[float]:
+    if objective:
+        return as_position(objective.get("position", [0, 0, 0]))
+    return _midpoint(attacker.get("position", [0, 0, 0]), defender.get("position", [0, 0, 0]))
+
+
+def _midpoint(a: list[Any], b: list[Any]) -> list[float]:
+    a_pos = as_position(a)
+    b_pos = as_position(b)
+    return [
+        (a_pos[0] + b_pos[0]) / 2.0,
+        (a_pos[1] + b_pos[1]) / 2.0,
+        (a_pos[2] + b_pos[2]) / 2.0,
+    ]
+
+
+def _combat_report(
+    attacker_id: str,
+    defender_id: str,
+    objective_id: str,
+    outcome: str,
+    losses: dict[str, int],
+) -> str:
+    objective_text = objective_id or "open terrain"
+    return (
+        f"{attacker_id} vs {defender_id} at {objective_text}: {outcome}; "
+        f"losses A/D {losses['attackerLossPercent']}%/{losses['defenderLossPercent']}%; "
+        f"control delta {losses['objectiveControlDelta']}"
+    )
+
+
 def _reason(attacker: dict[str, Any], defender: dict[str, Any], objective: dict[str, Any] | None, outcome: str) -> str:
     terrain = objective.get("terrainType", "mixed") if objective else "open"
     return f"{outcome} based on strength, unit type, readiness, morale, posture, terrain {terrain}, and random friction"
@@ -173,4 +318,3 @@ def _reason(attacker: dict[str, Any], defender: dict[str, Any], objective: dict[
 
 def _distance_2d(a: list[Any], b: list[Any]) -> float:
     return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
-

@@ -2,7 +2,7 @@ version = 54;
 sourceName = "CAI_V1_SmokeTest";
 author = "Campaign AI";
 onLoadName = "Campaign AI V1 Smoke Test";
-onLoadMission = "Minimal Campaign AI V1.0 smoke-test fixture.";
+onLoadMission = "Centered Campaign AI V1.0 smoke-test fixture with Phase 7 offscreen combat validation.";
 loadScreen = "";
 
 class EditorData
@@ -17,7 +17,7 @@ class EditorData
     };
     class Camera
     {
-        pos[] = {0,25,25};
+        pos[] = {5200,80,5600};
         dir[] = {0,-0.7071068,-0.7071068};
         up[] = {0,0.7071068,-0.7071068};
         aside[] = {1,0,0};
@@ -74,7 +74,7 @@ class Mission
                     flags = 7;
                     class PositionInfo
                     {
-                        position[] = {0,0.0014395714,0};
+                        position[] = {5000,0.0014395714,6200};
                     };
                     class Attributes
                     {

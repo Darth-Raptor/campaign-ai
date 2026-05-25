@@ -43,6 +43,7 @@ UNIT_TYPE_MODIFIERS = {
 }
 
 RANDOMNESS_BANDS = {
+    "NONE": (1.0, 1.0),
     "LOW": (0.90, 1.10),
     "NORMAL": (0.85, 1.15),
     "HIGH": (0.75, 1.25),
@@ -54,4 +55,3 @@ def get_save_dir() -> Path:
     raw = os.environ.get("CAI_SAVE_DIR")
     base = Path(raw) if raw else Path.cwd() / DEFAULT_SAVE_FOLDER
     return base.resolve()
-

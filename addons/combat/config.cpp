@@ -16,6 +16,9 @@ class CfgFunctions {
         class Combat {
             file = "\x\cai\addons\combat\functions";
             class initCombat {};
+            class detectCombatEngagements {};
+            class resolveCombatEngagementPosition {};
+            class validateCombatEngagement {};
             class requestCombatResolution {};
             class validateCombatResult {};
             class applyCombatResult {};
@@ -23,4 +26,3 @@ class CfgFunctions {
         };
     };
 };
-
