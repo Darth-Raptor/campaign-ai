@@ -1,0 +1,1847 @@
+CODEX HANDOFF — CAMPAIGN AI
+Project Name: Campaign AI
+Public Mod Folder: @Campaign_AI
+Internal Prefix: cai
+Function Tag: CAI
+Python Package Name: CAIPython
+Primary Game: Arma 3
+Primary Target Environment: HostHavoc Windows Dedicated Server
+Required Dependency: Pythia
+Architecture: Python owns major campaign simulation state; SQF validates and applies Arma-side effects.
+
+============================================================
+1. PROJECT PURPOSE
+============================================================
+
+Campaign AI is an Arma 3 operational campaign simulation mod.
+
+The goal is to create an ALiVE-inspired but separately implemented campaign AI system that supports:
+
+- Mission-builder-defined objectives
+- Virtual AI force structures
+- AI commanders with fog-of-war awareness
+- Python-owned campaign state through Pythia
+- SQF-side validation and Arma execution
+- Weighted virtual combat resolution
+- Objective ownership/control simulation
+- Commander decision scoring
+- Route/path/network analysis
+- Local JSON persistence
+- Future SQLite support
+- Future VPS REST API backend
+- Future War Room-style dashboard support
+- Future map indexing/objective clustering
+- Debug visualization for development and Zeus/admin oversight
+
+Campaign AI should operate at the campaign and operational level.
+
+It should not micromanage squad-level behavior such as stance, formation, suppressive fire, building clearing, or individual soldier tactics.
+
+Arma AI handles local tactical behavior when groups are spawned near players.
+
+Campaign AI handles the larger war.
+
+============================================================
+2. CORE DESIGN PRINCIPLE
+============================================================
+
+Python is the campaign brain.
+
+SQF is the Arma execution gate.
+
+Python may own:
+- campaign state
+- commander state
+- objective state
+- virtual group state
+- commander knowledge
+- combat calculations
+- route scoring
+- persistence
+- future backend communication
+
+SQF must own:
+- Eden module reading
+- Arma server authority checks
+- Pythia call wrappers
+- validation of Python responses
+- spawning/despawning live Arma groups
+- debug markers
+- Zeus/admin controls
+- live mission safety
+
+Python recommends.
+SQF validates.
+SQF applies.
+
+============================================================
+3. NON-NEGOTIABLE ARCHITECTURE RULES
+============================================================
+
+1. Campaign AI is server-authoritative.
+   - Commander cycles run only on the server.
+   - Virtual group state is authoritative on the server/Python side.
+   - Objective ownership is authoritative on the server/Python side.
+   - Clients may display debug information later, but must not make command decisions.
+
+2. Pythia is a required dependency.
+   - Campaign AI should disable itself if Pythia is unavailable.
+   - The mission must continue if Campaign AI disables itself.
+   - Failure must be logged clearly in the RPT.
+
+3. Python owns major simulation state.
+   - SQF should not maintain a competing full simulation state.
+   - SQF may keep lightweight mirrors for debug/application only.
+   - Python is the source of truth for Campaign AI campaign data.
+
+4. SQF validates all Python recommendations.
+   - Python cannot directly manipulate Arma objects.
+   - Python cannot directly execute mission logic.
+   - Python cannot directly issue live Arma orders.
+   - SQF must reject invalid, stale, unsafe, or unauthorized recommendations.
+
+5. Commanders must use fog of war.
+   - Commanders must not make decisions from perfect true enemy state.
+   - Commanders use commander knowledge state.
+   - Sensor/combat systems may compare true state, but commander strategy must not.
+
+6. Combat resolver and commander logic remain conceptually separate.
+   - Commander asks: “What should I do?”
+   - Combat resolver asks: “What happened when forces met?”
+   - Combat resolver must not make strategic decisions.
+   - Commander must not directly fudge combat outcomes.
+
+7. Do not build a full ALiVE clone.
+   - The first target is a predictable, debuggable conventional commander.
+   - Avoid insurgency/civilian systems in V1.
+   - Avoid complex backend/dashboard systems in V1.
+   - Avoid full map indexing in V1.
+
+8. Debug output is mandatory.
+   - Every commander cycle should be diagnosable.
+   - Every Python call should be traceable when debug is enabled.
+   - Every virtual combat result should produce useful reasoning output.
+
+============================================================
+4. REQUIRED DEPENDENCIES
+============================================================
+
+Required Arma dependency:
+
+@Pythia
+
+Campaign AI load order:
+
+-mod=@Pythia;@Campaign_AI
+
+Important:
+- Verify Pythia availability and compatibility on HostHavoc Windows dedicated server before building higher-level systems.
+- Do not proceed into commander AI until basic Pythia ping/save/load works reliably.
+- Do not require client-side Python calls in V1.
+- Treat Pythia as server-side required unless a future client feature explicitly requires otherwise.
+
+============================================================
+5. FAILURE BEHAVIOR
+============================================================
+
+If Pythia is missing, blocked, fails to initialize, or returns invalid data:
+
+- Disable Campaign AI systems.
+- Let the mission continue.
+- Log clear RPT errors.
+- Do not run commander cycles.
+- Do not run combat resolution.
+- Do not attempt save/load.
+- Do not leave partial simulation loops active.
+
+Required globals:
+
+CAI_pythiaAvailable = false;
+CAI_systemsEnabled = false;
+CAI_failureReason = "";
+CAI_initialized = false;
+CAI_debugEnabled = false;
+
+Failure log example:
+
+[CAI CORE] Pythia unavailable. Campaign AI systems disabled. Mission will continue.
+[CAI CORE] Reason: py3_fnc_callExtension missing or CAIPython.api.ping failed.
+
+============================================================
+6. PUBLIC MOD STRUCTURE
+============================================================
+
+@Campaign_AI
+  addons
+    cai_core.pbo
+    cai_pythia.pbo
+    cai_objectives.pbo
+    cai_virtual.pbo
+    cai_intel.pbo
+    cai_combat.pbo
+    cai_commanders.pbo
+    cai_modules.pbo
+
+  python_code
+    $PYTHIA$
+    __init__.py
+    api.py
+    state.py
+    persistence_json.py
+    schemas.py
+    objectives.py
+    virtual_groups.py
+    commanders.py
+    intel.py
+    combat.py
+    routing.py
+    indexing.py
+    backend.py
+    config.py
+    logging.py
+    requirements.txt
+
+$PYTHIA$ file contents:
+
+CAIPython
+
+============================================================
+7. SOURCE REPOSITORY STRUCTURE
+============================================================
+
+Campaign_AI/
+  addons/
+    core/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initCore.sqf
+        fn_log.sqf
+        fn_isServerAuthority.sqf
+        fn_getTime.sqf
+        fn_disableSystems.sqf
+
+    pythia/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initPythia.sqf
+        fn_checkPythia.sqf
+        fn_pyCall.sqf
+        fn_pyPing.sqf
+        fn_pyInitState.sqf
+        fn_pySaveSnapshot.sqf
+        fn_pyLoadSnapshot.sqf
+
+    objectives/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initObjectives.sqf
+        fn_registerObjective.sqf
+        fn_collectObjectiveModules.sqf
+        fn_drawObjectiveDebug.sqf
+
+    virtual/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initVirtual.sqf
+        fn_registerVirtualGroup.sqf
+        fn_collectVirtualForceModules.sqf
+        fn_applyVirtualOrders.sqf
+        fn_drawVirtualDebug.sqf
+        fn_spawnProfile.sqf
+        fn_despawnProfile.sqf
+
+    intel/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initIntel.sqf
+        fn_collectObservedEvents.sqf
+        fn_drawKnowledgeDebug.sqf
+
+    combat/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initCombat.sqf
+        fn_requestCombatResolution.sqf
+        fn_validateCombatResult.sqf
+        fn_applyCombatResult.sqf
+        fn_drawCombatDebug.sqf
+
+    commanders/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_initCommanders.sqf
+        fn_registerCommander.sqf
+        fn_collectCommanderModules.sqf
+        fn_startCommanderScheduler.sqf
+        fn_commanderCycle.sqf
+        fn_validateRecommendedOrders.sqf
+        fn_applyRecommendedOrders.sqf
+        fn_pauseCommander.sqf
+        fn_resumeCommander.sqf
+        fn_drawCommanderDebug.sqf
+
+    modules/
+      config.cpp
+      script_component.hpp
+      functions/
+        fn_moduleObjective.sqf
+        fn_moduleVirtualForces.sqf
+        fn_moduleCommander.sqf
+        fn_moduleDebug.sqf
+
+  python_code/
+    $PYTHIA$
+    __init__.py
+    api.py
+    state.py
+    schemas.py
+    persistence_json.py
+    objectives.py
+    virtual_groups.py
+    commanders.py
+    intel.py
+    combat.py
+    routing.py
+    indexing.py
+    backend.py
+    config.py
+    logging.py
+    requirements.txt
+
+  tools/
+    build.ps1
+    pack.ps1
+
+  README.md
+
+============================================================
+8. ADDON DEPENDENCY FLOW
+============================================================
+
+Use this dependency direction:
+
+cai_core
+  ↓
+cai_pythia
+  ↓
+cai_objectives
+  ↓
+cai_virtual
+  ↓
+cai_intel
+  ↓
+cai_combat
+  ↓
+cai_commanders
+  ↓
+cai_modules
+
+Important rules:
+
+- cai_core contains shared state, logging, disable behavior, and server authority checks.
+- cai_pythia contains all SQF/Python bridge wrappers.
+- cai_objectives reads Eden objective modules and sends objective data to Python.
+- cai_virtual reads virtual force modules and sends virtual force data to Python.
+- cai_intel visualizes commander knowledge and passes observed events to Python.
+- cai_combat requests Python combat resolution and validates results.
+- cai_commanders schedules commander cycles and applies Python order recommendations.
+- cai_modules defines Eden module classes and their attributes.
+
+Avoid circular dependencies.
+
+Do not let cai_combat depend on cai_commanders.
+
+============================================================
+9. CONFIG / FUNCTION NAMING
+============================================================
+
+Function tag:
+
+CAI
+
+Function format:
+
+CAI_fnc_functionName
+
+Examples:
+
+CAI_fnc_initCore
+CAI_fnc_checkPythia
+CAI_fnc_pyCall
+CAI_fnc_disableSystems
+CAI_fnc_registerObjective
+CAI_fnc_registerVirtualGroup
+CAI_fnc_commanderCycle
+CAI_fnc_validateRecommendedOrders
+CAI_fnc_applyRecommendedOrders
+CAI_fnc_requestCombatResolution
+CAI_fnc_drawCommanderDebug
+
+Do not use old AIC names.
+
+Do not use:
+
+AIC_fnc_*
+AICPython
+aic_*
+@AI_Control_Mod
+
+============================================================
+10. GLOBAL VARIABLES
+============================================================
+
+Required global variables:
+
+CAI_initialized = false;
+CAI_pythiaAvailable = false;
+CAI_systemsEnabled = false;
+CAI_failureReason = "";
+CAI_debugEnabled = false;
+
+CAI_moduleObjectives = [];
+CAI_moduleCommanders = [];
+CAI_moduleVirtualForces = [];
+
+CAI_lastPythonStateSummary = [];
+CAI_lastDebugSnapshot = [];
+CAI_lastCommanderCycle = 0;
+
+Optional lightweight mirrors:
+
+CAI_objectiveMirror = createHashMap;
+CAI_virtualGroupMirror = createHashMap;
+CAI_commanderMirror = createHashMap;
+CAI_debugMarkers = [];
+
+Important:
+Python owns the actual simulation state.
+These SQF mirrors are only for validation, debug, and Arma-side application.
+
+============================================================
+11. LOGGING TAGS
+============================================================
+
+Use these log prefixes:
+
+[CAI CORE]
+[CAI PYTHIA]
+[CAI OBJ]
+[CAI VIRTUAL]
+[CAI INTEL]
+[CAI COMBAT]
+[CAI CMD]
+[CAI MODULE]
+[CAIPY]
+[CAIPY ERROR]
+
+Examples:
+
+[CAI PYTHIA] Ping successful. Package: CAIPython.
+[CAI CORE] Campaign AI initialized.
+[CAI CMD] Commander cycle started for red_cmd_01.
+[CAI COMBAT] Combat result accepted: ATTACKER_REPULSED.
+[CAI CORE] Campaign AI disabled. Reason: Invalid Python response envelope.
+
+============================================================
+12. PYTHON PACKAGE STRUCTURE
+============================================================
+
+Package name:
+
+CAIPython
+
+python_code/
+  $PYTHIA$
+  __init__.py
+  api.py
+  state.py
+  schemas.py
+  persistence_json.py
+  objectives.py
+  virtual_groups.py
+  commanders.py
+  intel.py
+  combat.py
+  routing.py
+  indexing.py
+  backend.py
+  config.py
+  logging.py
+  requirements.txt
+
+File responsibilities:
+
+__init__.py
+- Keep minimal.
+- Do not place major logic here.
+- Expose package version if useful.
+
+api.py
+- Public API called by SQF.
+- Every callable function returns the standard response envelope.
+- No arbitrary function execution.
+
+state.py
+- Owns in-memory campaign state.
+- Provides init/reset/get/update helpers.
+
+schemas.py
+- Validates input and output data.
+- Use pydantic if dependency install works reliably.
+- Keep fallback manual validation possible.
+
+persistence_json.py
+- Save/load JSON snapshots.
+- Versioned schema.
+- Atomic save behavior where possible.
+
+objectives.py
+- Objective registration.
+- Objective control values.
+- Objective scoring.
+
+virtual_groups.py
+- Virtual group registration.
+- Virtual movement.
+- Group state changes.
+
+commanders.py
+- Commander cycle.
+- Order recommendation.
+- Posture/aggression/reserve logic.
+- Objective scoring.
+
+intel.py
+- Commander knowledge.
+- Contact reports.
+- Confidence decay.
+- Stale/lost contact handling.
+
+combat.py
+- Weighted combat power.
+- Random friction.
+- Outcome rolls.
+- Casualty/readiness/morale changes.
+- Combat report generation.
+
+routing.py
+- Route/path/network analysis.
+- Future networkx graph support.
+
+indexing.py
+- Future map/objective clustering.
+- Do not build full indexing in V1.
+
+backend.py
+- Future VPS REST API client.
+- Disabled in V1 except skeleton.
+
+config.py
+- Constants.
+- Save folder paths.
+- Feature flags.
+- Default settings.
+
+logging.py
+- Python-side structured logging.
+
+============================================================
+13. PYTHON REQUIREMENTS
+============================================================
+
+Requested package support:
+
+- requests
+- sqlite3, standard library where available
+- psycopg or asyncpg later
+- numpy
+- networkx
+- scipy later
+- pydantic
+
+Recommended V1 requirements.txt:
+
+requests
+pydantic
+networkx
+numpy
+
+Do not force scipy or PostgreSQL drivers in the first proof-of-concept unless required.
+
+Reasons:
+- They increase deployment complexity.
+- Hosted Windows dedicated servers may complicate binary package installation.
+- Pythia reliability must be proven before heavier dependency work.
+
+Phase 2+ optional dependencies:
+
+scipy
+psycopg
+asyncpg
+
+============================================================
+14. SQF ↔ PYTHON API CONTRACT
+============================================================
+
+All SQF calls into Python must go through:
+
+CAI_fnc_pyCall
+
+Do not scatter direct py3_fnc_callExtension calls across the codebase.
+
+CAI_fnc_pyCall responsibilities:
+
+1. Check isServer.
+2. Check CAI_systemsEnabled where appropriate.
+3. Check Pythia availability.
+4. Call py3_fnc_callExtension.
+5. Validate response envelope.
+6. Log Python logs if debug enabled.
+7. Return standardized SQF result.
+8. Disable Campaign AI on critical failure.
+
+Raw call pattern inside wrapper:
+
+[
+    "CAIPython.api.function_name",
+    [_payload]
+] call py3_fnc_callExtension;
+
+Example public call:
+
+[
+    "CAIPython.api.ping",
+    []
+] call CAI_fnc_pyCall;
+
+============================================================
+15. STANDARD PYTHON RESPONSE ENVELOPE
+============================================================
+
+Every Python API function called from SQF must return:
+
+[
+  success,
+  statusCode,
+  payload,
+  logs
+]
+
+Where:
+
+success:
+Boolean true/false.
+
+statusCode:
+String.
+
+payload:
+Array-compatible SQF-safe data.
+
+logs:
+Array of log strings.
+
+Example success:
+
+[
+  true,
+  "OK",
+  [
+    ["package", "CAIPython"],
+    ["version", "0.1.0"],
+    ["systemsEnabled", true]
+  ],
+  [
+    "[CAIPY] Ping successful"
+  ]
+]
+
+Example failure:
+
+[
+  false,
+  "PY_STATE_NOT_INITIALIZED",
+  [],
+  [
+    "[CAIPY ERROR] State not initialized"
+  ]
+]
+
+SQF must never assume success.
+
+============================================================
+16. REQUIRED PYTHON PUBLIC API FUNCTIONS
+============================================================
+
+V1 required:
+
+CAIPython.api.ping()
+Purpose:
+- Verify package availability.
+- Verify Pythia bridge works.
+- Return version/status.
+
+CAIPython.api.init_state(payload)
+Purpose:
+- Initialize campaign state from SQF/Eden modules.
+Input:
+- campaignId
+- worldName
+- missionName
+- objectives
+- commanders
+- virtualGroups
+- settings
+Output:
+- state summary
+
+CAIPython.api.get_state_summary()
+Purpose:
+- Return lightweight state summary.
+Output:
+- initialized status
+- objective count
+- commander count
+- virtual group count
+- last save time
+- enabled feature flags
+
+CAIPython.api.save_snapshot(payload)
+Purpose:
+- Save local JSON snapshot.
+Input:
+- campaignId
+- saveName optional
+Output:
+- save status
+- file path or logical save ID
+
+CAIPython.api.load_snapshot(payload)
+Purpose:
+- Load local JSON snapshot.
+Input:
+- campaignId
+- saveName optional
+Output:
+- loaded state summary
+
+CAIPython.api.commander_cycle(payload)
+Purpose:
+- Run one commander decision cycle.
+Input:
+- commanderId
+- gameTime
+- observedEvents
+Output:
+- recommended orders
+- updated state summary
+- debug reasoning
+
+CAIPython.api.resolve_combat_batch(payload)
+Purpose:
+- Resolve virtual combat batch.
+Input:
+- gameTime
+- engagement list or auto-detect request
+Output:
+- combat results
+- group state changes
+- objective control changes
+- generated contact reports
+- debug reasoning
+
+CAIPython.api.get_debug_snapshot(payload)
+Purpose:
+- Return marker-ready debug data.
+Input:
+- debugMode
+- commanderId optional
+Output:
+- objectives
+- groups
+- commanders
+- knowledge contacts
+- combat history subset
+
+Phase 2+ API:
+
+CAIPython.api.sync_backend()
+CAIPython.api.index_area()
+CAIPython.api.build_route_graph()
+CAIPython.api.score_routes()
+CAIPython.api.query_backend_command_queue()
+
+============================================================
+17. INITIAL PYTHIA PROOF-OF-CONCEPT
+============================================================
+
+The first working test must be boring and technical.
+
+Goal:
+Prove Pythia + CAIPython works on HostHavoc Windows dedicated server.
+
+Required POC sequence:
+
+1. Mission starts.
+2. Server calls CAI_fnc_checkPythia.
+3. CAI_fnc_checkPythia calls CAIPython.api.ping.
+4. Python returns success envelope.
+5. SQF logs ping result.
+6. SQF sends sample state:
+   - one objective
+   - one commander
+   - one virtual group
+7. Python stores state in memory.
+8. SQF calls CAIPython.api.save_snapshot.
+9. Python writes local JSON snapshot.
+10. SQF calls CAIPython.api.load_snapshot.
+11. Python loads snapshot.
+12. SQF logs loaded state summary.
+13. If any step fails, Campaign AI disables itself and mission continues.
+
+Do not build commander AI before this works.
+
+============================================================
+18. LOCAL JSON SNAPSHOT DESIGN
+============================================================
+
+V1 persistence:
+Local JSON snapshots.
+
+Snapshot structure:
+
+{
+  "schemaVersion": 1,
+  "modVersion": "0.1.0",
+  "campaignId": "default",
+  "worldName": "Altis",
+  "missionName": "Unknown",
+  "savedAtUtc": "2026-05-24T00:00:00Z",
+  "objectives": {},
+  "virtualGroups": {},
+  "commanders": {},
+  "commanderKnowledge": {},
+  "combatHistory": [],
+  "eventLog": []
+}
+
+Save behavior:
+- Write temp file first.
+- Replace active snapshot after successful write.
+- Keep backup file if practical.
+
+Example logical save location:
+
+cai_saves/default_snapshot.json
+cai_saves/default_snapshot.bak.json
+
+Do not assume the mod folder is writable.
+Use configurable save path.
+Prefer a server/profile-writable directory if available.
+
+============================================================
+19. PYTHON CAMPAIGN STATE MODEL
+============================================================
+
+Python owns this state:
+
+CAI_STATE = {
+    "initialized": false,
+    "campaignId": "",
+    "worldName": "",
+    "missionName": "",
+    "settings": {},
+    "objectives": {},
+    "virtualGroups": {},
+    "commanders": {},
+    "commanderKnowledge": {},
+    "combatHistory": [],
+    "eventLog": [],
+    "routeGraph": null
+}
+
+SQF may request summaries and debug snapshots.
+
+SQF should not manually mutate Python state except through defined API functions.
+
+============================================================
+20. OBJECTIVE DATA MODEL
+============================================================
+
+Python objective object:
+
+{
+  "id": "obj_001",
+  "name": "CANDALDARI AIRFIELD",
+  "type": "airfield",
+  "position": [24220, 11830, 0],
+  "radius": 500,
+  "initialOwner": "WEST",
+  "controlledBy": "WEST",
+  "controlValue": 100,
+  "priority": 90,
+  "size": "large",
+  "terrain": "open",
+  "garrisonSlots": 6,
+  "contested": false,
+  "lastContactTime": 0,
+  "aoMarker": "",
+  "debug": true
+}
+
+MVP objective types:
+
+- military_base
+- airfield
+- outpost
+- checkpoint
+- town
+- village
+- industrial
+- infrastructure
+- route_node
+- custom
+
+Priority scale:
+
+100 = campaign-critical objective
+80  = major base / airfield / logistics hub
+60  = important town / route junction / outpost
+40  = minor village / checkpoint / patrol area
+20  = low-value area / ambient objective
+
+============================================================
+21. VIRTUAL GROUP DATA MODEL
+============================================================
+
+Python virtual group object:
+
+{
+  "id": "grp_red_001",
+  "commanderId": "red_cmd_01",
+  "side": "EAST",
+  "faction": "rhs_faction_vdv",
+  "groupType": "infantry_squad",
+  "strength": 8,
+  "maxStrength": 8,
+  "position": [22000, 15000, 0],
+  "currentObjective": "obj_005",
+  "assignedOrder": "RESERVE",
+  "orderTarget": "",
+  "state": "virtual",
+  "readiness": 80,
+  "morale": 70,
+  "mobility": "foot",
+  "speed": 1.0,
+  "lastOrderTime": 0,
+  "lastMoveTime": 0,
+  "manualOverride": false,
+  "lockedUntil": 0,
+  "debug": true
+}
+
+MVP group types:
+
+- infantry_fireteam
+- infantry_squad
+- weapons_squad
+- motorized_infantry
+- mechanized_infantry
+- recon_team
+- static_defense_team
+- light_vehicle_patrol
+- armor_section
+
+Do not attempt to model every exact faction group in V1.
+Use generic campaign-level abstractions first.
+
+============================================================
+22. COMMANDER DATA MODEL
+============================================================
+
+Python commander object:
+
+{
+  "id": "red_cmd_01",
+  "name": "REDFOR NORTH COMMAND",
+  "side": "EAST",
+  "faction": "rhs_faction_vdv",
+  "commanderType": "occupation",
+  "posture": "defensive",
+  "aoMarker": "redfor_taor_north",
+  "hqPosition": [22000, 15000, 0],
+  "active": true,
+  "paused": false,
+  "cycleTime": 120,
+  "lastCycle": 0,
+  "aggression": 0.5,
+  "reservePercentage": 20,
+  "attackThreshold": 1.5,
+  "reinforcementThreshold": 0.6,
+  "patrolFrequency": 0.5,
+  "debug": true,
+  "persistenceEnabled": true
+}
+
+MVP commander types:
+
+- occupation
+- invasion_basic
+
+MVP postures:
+
+- passive
+- defensive
+- balanced
+- aggressive
+
+Do not implement asymmetric commander in MVP.
+
+============================================================
+23. COMMANDER KNOWLEDGE / INTEL MODEL
+============================================================
+
+Each commander has independent knowledge.
+
+Python commander knowledge object:
+
+{
+  "commanderId": "red_cmd_01",
+  "knownEnemyGroups": [],
+  "knownEnemyObjectives": [],
+  "contactReports": [],
+  "suspectedAreas": [],
+  "lastIntelUpdate": 0
+}
+
+Contact report object:
+
+{
+  "contactId": "contact_red_00042",
+  "enemySide": "WEST",
+  "lastKnownPosition": [21450, 22980, 0],
+  "positionAccuracy": 250,
+  "contactType": "infantry",
+  "strengthEstimate": [6, 12],
+  "confidence": 0.65,
+  "source": "patrol",
+  "reportedBy": "grp_red_003",
+  "firstSeen": 600,
+  "lastSeen": 900,
+  "status": "RECENT"
+}
+
+Confidence levels:
+
+1.00 = confirmed/currently observed
+0.75 = recent reliable contact
+0.50 = plausible but aging report
+0.25 = stale or uncertain report
+0.00 = lost/expired
+
+Statuses:
+
+- CONFIRMED
+- RECENT
+- STALE
+- SUSPECTED
+- LOST
+
+Critical rule:
+Commander strategy must read commander knowledge, not perfect enemy state.
+
+Bad:
+Commander directly checks all enemy groups.
+
+Good:
+Commander checks known contacts, suspected areas, and known/suspected objective ownership.
+
+============================================================
+24. ORDER TYPES
+============================================================
+
+MVP order types:
+
+DEFEND
+- Move to or remain at objective.
+- Increase/maintain objective control.
+- Hold until reassigned.
+
+PATROL
+- Move between friendly objectives.
+- Generate presence and detection chances.
+- Support area security.
+
+ATTACK
+- Move toward known/suspected enemy objective.
+- Engage if opposing virtual forces are encountered.
+- Objective control changes only through combat/control logic.
+
+REINFORCE
+- Move to friendly objective under threat.
+- Strengthen local defense.
+- Assist friendly groups.
+
+RESERVE
+- Stay near HQ or rear objective.
+- Wait for future tasking.
+
+Later order types:
+
+RECON
+WITHDRAW
+SCREEN
+AMBUSH
+LOGISTICS
+RAID
+
+Do not implement later order types until MVP is stable.
+
+============================================================
+25. PYTHON ORDER RECOMMENDATION FORMAT
+============================================================
+
+Python commander cycle returns recommended orders.
+
+Example:
+
+{
+  "commanderId": "red_cmd_01",
+  "cycleTime": 1234.5,
+  "orders": [
+    {
+      "orderId": "ord_0001",
+      "groupId": "grp_red_001",
+      "orderType": "DEFEND",
+      "targetObjectiveId": "obj_003",
+      "targetPosition": [22000, 15000, 0],
+      "priority": 80,
+      "reason": "High-priority friendly objective underdefended",
+      "expiresAt": 1534.5
+    }
+  ]
+}
+
+SQF validation checks:
+
+- group exists in SQF mirror or latest debug snapshot
+- group belongs to commander
+- group is not manualOverride
+- objective exists
+- order type is allowlisted
+- target is inside commander AO when required
+- order has not expired
+- response schema is valid
+- systems are enabled
+- server owns execution
+
+Rejected order log example:
+
+[CAI CMD] Rejected order ord_0001. Reason: Group is under manual override.
+
+============================================================
+26. COMMANDER CYCLE FLOW
+============================================================
+
+Default cadence:
+Every 120 seconds.
+
+SQF flow:
+
+1. Server scheduler triggers CAI_fnc_commanderCycle.
+2. SQF exits if not server.
+3. SQF exits if CAI_systemsEnabled is false.
+4. SQF collects observed events since last cycle.
+5. SQF calls CAIPython.api.commander_cycle through CAI_fnc_pyCall.
+6. Python updates intel decay.
+7. Python scores objectives.
+8. Python recommends orders.
+9. Python returns orders and debug reasoning.
+10. SQF validates each order.
+11. SQF applies accepted orders to Arma-side mirrors/debug/spawn systems.
+12. SQF logs rejected orders if debug enabled.
+13. SQF requests debug snapshot if debug enabled.
+14. SQF updates markers.
+
+Python commander logic priority:
+
+1. Is an important friendly objective contested?
+2. Are critical objectives defended?
+3. Is reserve percentage below required level?
+4. Are idle groups available?
+5. Is there a known/suspected enemy objective worth attacking?
+6. Is local force ratio favorable enough?
+7. Is the commander overextended?
+
+Keep this logic simple in V1.
+
+============================================================
+27. VIRTUAL MOVEMENT
+============================================================
+
+Python owns virtual group positions.
+
+Virtual movement should update during commander cycle or a separate low-frequency virtual update.
+
+Do not run virtual movement per-frame.
+
+Movement behavior:
+- Groups move toward assigned target objective or position.
+- Movement speed depends on mobility type.
+- Position updates are campaign-level approximations.
+- SQF draws markers from Python debug snapshot.
+
+Mobility examples:
+
+foot
+motorized
+mechanized
+armor
+static
+
+SQF should not constantly simulate fine-grained movement.
+Keep it coarse and debuggable.
+
+============================================================
+28. COMBAT RESOLVER
+============================================================
+
+Python owns weighted combat calculations.
+
+Combat occurs only when:
+- opposing virtual groups are close enough,
+- combat is offscreen,
+- players are not within active simulation radius,
+- both groups are valid,
+- neither group is in manual override,
+- no live Arma fight is already handling the event.
+
+Player proximity rule:
+If players are close enough for live Arma simulation, do not resolve virtual combat for those groups.
+
+Combat power formula:
+
+Combat Power =
+Base Strength
+× Unit Type Modifier
+× Readiness Modifier
+× Morale Modifier
+× Posture Modifier
+× Terrain Modifier
+× Fortification Modifier
+× Support Modifier
+× Surprise Modifier
+× Random Friction Modifier
+
+MVP modifiers:
+
+- base strength
+- unit type
+- readiness
+- morale
+- posture
+- terrain
+- fortification
+- support
+- surprise
+- random friction
+
+Randomness settings:
+
+Low:     x0.90 to x1.10
+Normal:  x0.85 to x1.15
+High:    x0.75 to x1.25
+Chaotic: x0.65 to x1.35
+
+Default:
+Normal
+
+Outcome bands by attacker/defender ratio:
+
+3.0+       decisive attacker advantage
+2.0-2.99   strong attacker advantage
+1.25-1.99  attacker advantage
+0.80-1.24  even fight
+0.50-0.79  defender advantage
+below 0.50 strong defender advantage
+
+Result types:
+
+- ATTACKER_DECISIVE_VICTORY
+- ATTACKER_VICTORY
+- ATTACKER_COSTLY_VICTORY
+- ATTACKER_GAINED_GROUND
+- STALEMATE
+- DEFENDER_HOLD
+- DEFENDER_SUCCESSFUL_DEFENSE
+- ATTACKER_REPULSED
+- ATTACKER_ROUTED
+- DEFENDER_WITHDRAWAL
+- BOTH_SIDES_BREAK_CONTACT
+
+Combat result affects:
+
+- group strength
+- readiness
+- morale
+- objective control value
+- assigned order
+- commander knowledge
+- contact reports
+- combat history
+
+SQF validates and displays results.
+
+============================================================
+29. COMBAT RESULT FORMAT
+============================================================
+
+Python combat result example:
+
+{
+  "engagementId": "eng_0001",
+  "objectiveId": "obj_003",
+  "attackerGroupId": "grp_red_004",
+  "defenderGroupId": "grp_blue_002",
+  "attackerPower": 10.74,
+  "defenderPower": 15.44,
+  "ratio": 0.69,
+  "outcome": "ATTACKER_REPULSED",
+  "attackerLossPercent": 25,
+  "defenderLossPercent": 8,
+  "attackerReadinessDelta": -30,
+  "defenderReadinessDelta": -10,
+  "attackerMoraleDelta": -20,
+  "defenderMoraleDelta": 5,
+  "objectiveControlDelta": -30,
+  "generatedContactReports": [],
+  "reason": "Urban defender advantage, prepared defense, no attacker support"
+}
+
+SQF validation:
+- attacker group exists
+- defender group exists
+- objective exists if provided
+- outcome is allowlisted
+- loss values are within safe bounds
+- result is offscreen
+- no players are near the fight
+
+============================================================
+30. OBJECTIVE CONTROL MODEL
+============================================================
+
+Objective control uses value 0-100.
+
+Suggested meaning:
+
+0-25   defender controls
+26-49  defender controls but contested
+50-74  attacker foothold / contested
+75-99  attacker controls but not secure
+100    attacker fully controls
+
+Combat changes objective control:
+
+Attacker decisive victory: +60 to +100
+Attacker victory: +35 to +60
+Attacker gained ground: +15 to +35
+Stalemate: -10 to +10
+Defender hold: -10 to -25
+Attacker repulsed: -25 to -50
+
+Objective owner changes only when control threshold is reached.
+
+Do not instantly flip objectives from a single minor skirmish.
+
+============================================================
+31. ROUTE / PATH / NETWORK ANALYSIS
+============================================================
+
+Python owns route/path/network analysis.
+
+V1:
+- skeleton only
+- no complex pathfinding required
+
+Phase 2:
+- use networkx
+- objectives become graph nodes
+- roads/routes become graph edges
+- threat values modify route scores
+- stale contacts and suspected enemy areas influence route safety
+
+Route graph example:
+
+{
+  "nodes": {
+    "obj_001": {
+      "position": [24220, 11830, 0],
+      "type": "airfield"
+    },
+    "obj_002": {
+      "position": [21520, 23000, 0],
+      "type": "outpost"
+    }
+  },
+  "edges": [
+    {
+      "from": "obj_001",
+      "to": "obj_002",
+      "distance": 2300,
+      "routeType": "road",
+      "threat": 0.25
+    }
+  ]
+}
+
+Do not make route analysis block the V1 Pythia POC.
+
+============================================================
+32. MAP INDEXING / OBJECTIVE CLUSTERING
+============================================================
+
+Python will eventually handle map indexing/objective clustering.
+
+V1:
+- mission builder manually places objectives through Eden modules.
+- Python stores and scores those objectives.
+- No full automatic map indexing yet.
+
+Phase 2:
+- Python can cluster mission-builder-marked map areas.
+- Python can generate suggested objectives.
+- Mission builder can accept/reject generated objectives.
+- Future indexing module can feed objective candidates into Python.
+
+Do not attempt full ALiVE-style indexing in V1.
+
+============================================================
+33. VPS / WAR ROOM-STYLE BACKEND
+============================================================
+
+Future backend path:
+
+Campaign AI Arma Server
+  ↓ Pythia / CAIPython
+VPS REST API
+  ↓
+Database / dashboard
+
+Preferred model:
+Pythia → VPS REST API → database
+
+Do not use direct PostgreSQL in V1.
+
+V1:
+- backend.py exists as skeleton only.
+- backend sync disabled.
+- no Discord integration.
+- no SIGACT integration.
+- no logistics integration.
+
+Phase 2+:
+- HTTPS REST API
+- API token authentication
+- campaign state upload
+- AAR/event upload
+- dashboard state feed
+- pending command queue
+- admin campaign controls
+
+Security:
+Do not hardcode API tokens into mission files or public PBO content.
+
+============================================================
+34. SECURITY REQUIREMENTS
+============================================================
+
+Pythia gives the mod powerful file/network access.
+
+Even though full access is allowed for this project, Codex must implement guardrails.
+
+Required guardrails:
+
+1. Server-only Python calls.
+2. No client-side Python execution in V1.
+3. No arbitrary Python eval from SQF.
+4. No mission-maker-provided raw Python function strings.
+5. No public remote command endpoint in V1.
+6. Backend disabled unless configured.
+7. API tokens stored in server-side config only.
+8. All file writes constrained to configured CAI save/log folders.
+9. SQF may only call allowlisted CAIPython.api functions.
+10. Zeus/admin tools must not expose arbitrary Python execution.
+11. Invalid Python responses disable Campaign AI safely.
+
+Do not build a system where a client can cause arbitrary Python to run on the server.
+
+============================================================
+35. HOSTHAVOC WINDOWS DEPLOYMENT NOTES
+============================================================
+
+Initial target:
+HostHavoc Windows dedicated server.
+
+Required deployment checks:
+
+1. Confirm @Pythia loads.
+2. Confirm @Campaign_AI loads.
+3. Confirm server RPT shows Pythia availability.
+4. Confirm CAIPython.api.ping works.
+5. Confirm requirements install successfully.
+6. Confirm JSON save folder is writable.
+7. Confirm mission continues if Pythia fails.
+8. Confirm no client-side Python requirement exists.
+9. Confirm BattleEye or host restrictions do not block server-side extension use.
+
+Modline:
+
+-mod=@Pythia;@Campaign_AI
+
+Do not assume file patching is required unless testing proves it.
+Do not assume the mod folder is writable.
+Prefer configurable save path.
+
+============================================================
+36. EDEN MODULES FOR MVP
+============================================================
+
+Create these Eden modules.
+
+1. Campaign AI Objective Module
+
+Attributes:
+- Objective ID
+- Objective Name
+- Objective Type
+- Initial Owner
+- Priority
+- Radius
+- Size
+- Terrain Type
+- Garrison Slots
+- Debug Enabled
+
+2. Campaign AI Commander Module
+
+Attributes:
+- Commander ID
+- Commander Name
+- Side
+- Faction
+- Commander Type
+- Posture
+- AO Marker
+- HQ Position or synced object
+- Cycle Time
+- Aggression
+- Reserve Percentage
+- Attack Threshold
+- Reinforcement Threshold
+- Debug Enabled
+- Persistence Enabled
+
+3. Campaign AI Virtual Forces Module
+
+Attributes:
+- Side
+- Faction
+- Commander ID
+- Force Size
+- Spawn Area Marker
+- Initial Objective
+- Debug Enabled
+
+Force sizes:
+- Platoon
+- Company
+- Battalion
+
+4. Campaign AI Debug Module
+
+Attributes:
+- Enable Debug
+- Debug Mode: True State / Commander Knowledge / Both
+- Commander ID Filter
+- Marker Refresh Interval
+
+============================================================
+37. ZEUS / ADMIN OVERRIDE — FUTURE
+============================================================
+
+Not MVP unless basic commander system is already stable.
+
+Future Zeus controls:
+
+- Pause Commander
+- Resume Commander
+- Force Defend Objective
+- Force Attack Objective
+- Set Objective Owner
+- Disable Commander Control for Selected Group
+- Return Group to Commander Control
+- Delete / Retire Virtual Group
+- Spawn Virtual Group Here
+- Force Save Snapshot
+- Force Load Snapshot
+
+Manual override rule:
+
+When Zeus takes control:
+manualOverride = true
+
+When returned:
+manualOverride = false
+
+Commander must not fight Zeus for control.
+
+============================================================
+38. DEBUG REQUIREMENTS
+============================================================
+
+Debug is mandatory.
+
+Debug views:
+
+1. True State Debug
+Shows:
+- true objective ownership
+- true virtual group positions
+- true current orders
+- combat engagements
+- objective control values
+
+2. Commander Knowledge Debug
+Shows:
+- what a specific commander believes
+- known contacts
+- stale contacts
+- suspected areas
+- confidence radius
+- last seen time
+- known/suspected objective ownership
+
+3. Python/Pythia Debug
+Shows:
+- ping status
+- last Python call
+- last response status
+- last error
+- save/load status
+- state summary
+
+Example commander debug marker:
+
+REDFOR NORTH CMD
+POSTURE: DEFENSIVE
+GROUPS: 12 TOTAL / 3 IDLE / 2 ATTACKING / 5 DEFENDING / 2 RESERVE
+OBJECTIVES: 7 CONTROLLED / 2 CONTESTED / 5 ENEMY
+LAST CYCLE: 14:32:10
+
+Example combat debug log:
+
+[CAI COMBAT]
+Objective: COP MARTIN
+Attacker: grp_red_004
+Defender: grp_blue_002
+Attacker Power: 10.74
+Defender Power: 15.44
+Ratio: 0.69
+Outcome: ATTACKER_REPULSED
+Attacker Losses: 25%
+Defender Losses: 8%
+Objective Control Change: -30
+Reason: Urban defender advantage, prepared defense, no attacker support
+
+============================================================
+39. MVP DEVELOPMENT ORDER
+============================================================
+
+PHASE 0 — Pythia Foundation
+- Create @Campaign_AI mod skeleton.
+- Add cai_core and cai_pythia.
+- Create CAIPython package.
+- Implement CAI_fnc_pyCall.
+- Implement CAIPython.api.ping.
+- Implement failure-disable behavior.
+
+PHASE 1 — JSON Snapshot Proof
+- Implement CAIPython.api.init_state.
+- Implement CAIPython.api.save_snapshot.
+- Implement CAIPython.api.load_snapshot.
+- SQF sends sample state.
+- Python saves and loads JSON.
+- RPT logs summary.
+
+PHASE 2 — Eden Module Collection
+- Build Campaign AI Objective Module.
+- Build Campaign AI Commander Module.
+- Build Campaign AI Virtual Forces Module.
+- SQF collects module data.
+- SQF sends module data to Python init_state.
+
+PHASE 3 — Python State Ownership
+- Python stores objectives.
+- Python stores commanders.
+- Python stores virtual groups.
+- Python stores commander knowledge.
+- SQF can request state summary/debug snapshot.
+
+PHASE 4 — Commander Cycle
+- Python runs commander cycle every 120 seconds.
+- Python recommends DEFEND, PATROL, RESERVE, ATTACK, REINFORCE.
+- SQF validates recommendations.
+- SQF applies valid recommendations to debug/Arma-side mirrors.
+
+PHASE 5 — Virtual Movement
+- Python updates virtual group positions.
+- SQF draws virtual group debug markers.
+- Virtual movement remains low-frequency.
+
+PHASE 6 — Combat Resolver
+- Python detects or receives offscreen engagements.
+- Python resolves weighted combat.
+- SQF validates combat result.
+- Python updates state.
+- SQF displays debug result.
+
+PHASE 7 — Real Save/Load
+- Python saves full Campaign AI state.
+- Python loads state on mission restart.
+- SQF verifies loaded state summary.
+
+============================================================
+40. MVP ACCEPTANCE CRITERIA
+============================================================
+
+The MVP is accepted when:
+
+1. HostHavoc Windows dedicated server loads @Pythia and @Campaign_AI.
+2. CAIPython.api.ping succeeds.
+3. If ping fails, Campaign AI disables and the mission continues.
+4. SQF can initialize Python state from Eden modules.
+5. Python can save/load a local JSON snapshot.
+6. Python owns objective, commander, virtual group, and knowledge state.
+7. SQF can request debug snapshots from Python.
+8. Commander cycle runs every 120 seconds.
+9. Python recommends commander orders.
+10. SQF validates commander orders.
+11. SQF rejects invalid orders safely.
+12. SQF draws useful debug markers.
+13. Python resolves offscreen virtual combat.
+14. SQF does not resolve combat near players.
+15. No client-side Python execution is required.
+16. No arbitrary Python execution path exists.
+17. No unrestricted remoteExec path exists.
+18. RPT logs are clear enough to diagnose failure.
+
+============================================================
+41. DO NOT BUILD IN V1
+============================================================
+
+Do not build these in the first development pass:
+
+- Full web dashboard
+- Live VPS backend sync
+- Direct PostgreSQL connection
+- Discord integration
+- SIGACT integration
+- Logistics integration
+- Supply request integration
+- Insurgency commander
+- Civilian population controller
+- IED networks
+- Air commander
+- Full ALiVE-style map indexing
+- Background Python threads
+- Client-side Python calls
+- Arbitrary Zeus Python execution
+- Complex UI command dashboard
+- Full spawned AI lifecycle
+- Dynamic ORBAT parser
+- Advanced persistence for individual live units
+- Advanced medical persistence
+- Per-frame Python simulation
+
+============================================================
+42. FIRST CODEX TASK
+============================================================
+
+Build the Campaign AI Pythia-integrated foundation.
+
+Deliver:
+
+1. Arma mod skeleton:
+   - @Campaign_AI
+   - cai_core
+   - cai_pythia
+   - cai_objectives
+   - cai_virtual
+   - cai_intel
+   - cai_combat
+   - cai_commanders
+   - cai_modules
+
+2. Python package:
+   - python_code/$PYTHIA$
+   - python_code/__init__.py
+   - python_code/api.py
+   - python_code/state.py
+   - python_code/persistence_json.py
+   - python_code/schemas.py
+   - python_code/config.py
+   - python_code/logging.py
+   - python_code/requirements.txt
+
+3. SQF bridge functions:
+   - CAI_fnc_initCore
+   - CAI_fnc_checkPythia
+   - CAI_fnc_pyCall
+   - CAI_fnc_disableSystems
+   - CAI_fnc_pyPing
+   - CAI_fnc_pyInitState
+   - CAI_fnc_pySaveSnapshot
+   - CAI_fnc_pyLoadSnapshot
+
+4. Python API:
+   - CAIPython.api.ping
+   - CAIPython.api.init_state
+   - CAIPython.api.get_state_summary
+   - CAIPython.api.save_snapshot
+   - CAIPython.api.load_snapshot
+
+5. Test path:
+   - On mission start, server calls CAIPython.api.ping.
+   - If ping succeeds, SQF sends sample Campaign AI state to Python.
+   - Python saves JSON.
+   - Python loads JSON.
+   - SQF logs loaded summary.
+   - If any step fails, Campaign AI disables itself and mission continues.
+
+Do not proceed to commander logic until this foundation is proven on HostHavoc Windows dedicated server.
+
+============================================================
+43. FINAL IMPLEMENTATION WARNING
+============================================================
+
+The highest-risk design choice is making Pythia required and letting Python own major simulation state.
+
+That can be powerful, but only if the bridge is reliable.
+
+Therefore:
+- prove Pythia first,
+- prove JSON save/load second,
+- prove module state transfer third,
+- then build commander logic.
+
+Do not build the smart commander first.
+
+Build the reliable bridge first.

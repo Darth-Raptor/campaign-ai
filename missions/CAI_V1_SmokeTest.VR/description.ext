@@ -1,0 +1,9 @@
+briefingName = "Campaign AI V1 Smoke Test";
+overviewText = "Minimal Campaign AI V1.0 smoke-test fixture for listen, local dedicated, and HostHavoc validation.";
+author = "Campaign AI";
+
+respawn = 3;
+respawnDelay = 5;
+disabledAI = 1;
+enableDebugConsole = 1;
+
