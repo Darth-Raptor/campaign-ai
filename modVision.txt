@@ -1,0 +1,9 @@
+First I want to plan the core design of the AI commander. This is my vision: 
+
+-The user can place a commander module for each side (East, West, and Independent)
+-The user selects how large of a force the commander has at start (Platoon, Company, battalion, Regiment)
+-The user selects the commanders objective (invade, occupy, insurgency)
+-The user selects the commanders skill level (low, medium, high)
+-The user  then places area markers that determine the commanders inital teritory. The user names those area markers and then inputs the variable names into a text entry in the commanders module seperated by a comma.
+
+The user then has the option to place custom objective markers for areas they want added to the objective registry. The module should have a drop down selection for objective side (East, West, Independent). 

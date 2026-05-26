@@ -1,0 +1,10 @@
+@Campaign_AI/
+qa/
+*.pbo
+*.bisign
+*.bikey
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+

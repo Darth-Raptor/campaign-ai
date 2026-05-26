@@ -1,0 +1,1 @@
+# Core Map Indexer uses the Python standard library only.
