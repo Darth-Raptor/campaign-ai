@@ -37,6 +37,7 @@ private _minimumScore = (_minimumScoreValue max 0) min 100;
 private _debugMarkers = _logic getVariable ["CAI_debugMarkers", true];
 private _missionRoot = getMissionPath "";
 private _indexPath = getMissionPath _indexFile;
+private _customObjectives = [] call CAI_fnc_collectCustomObjectiveModules;
 
 private _payload = [
     ["missionRoot", _missionRoot],
@@ -46,10 +47,11 @@ private _payload = [
     ["missionName", missionName],
     ["density", _density],
     ["minimumScore", _minimumScore],
-    ["debugMarkers", _debugMarkers]
+    ["debugMarkers", _debugMarkers],
+    ["customObjectives", _customObjectives]
 ];
 
-["[CAI WORLD]", format ["Runtime world model starting. Index: %1. Density: %2. Minimum score: %3.", _indexPath, _density, _minimumScore]] call CAI_fnc_log;
+["[CAI WORLD]", format ["Runtime world model starting. Index: %1. Density: %2. Minimum score: %3. Custom objectives: %4.", _indexPath, _density, _minimumScore, count _customObjectives]] call CAI_fnc_log;
 
 private _response = ["CAIPython.api.init_world_model", [_payload], false] call CAI_fnc_pyCall;
 if (!((_response select 0) isEqualTo true)) exitWith {
@@ -63,13 +65,23 @@ CAI_lastWorldModelSummary = _response select 2;
 private _sourceCount = [CAI_lastWorldModelSummary, "sourceCandidateCount", 0] call CAI_fnc_getKV;
 private _eligibleCount = [CAI_lastWorldModelSummary, "eligibleCandidateCount", 0] call CAI_fnc_getKV;
 private _seededCount = [CAI_lastWorldModelSummary, "seededObjectiveCount", 0] call CAI_fnc_getKV;
+private _customCount = [CAI_lastWorldModelSummary, "customObjectiveCount", 0] call CAI_fnc_getKV;
+private _derivedCount = [CAI_lastWorldModelSummary, "derivedObjectiveCount", 0] call CAI_fnc_getKV;
+private _suppressedCount = [CAI_lastWorldModelSummary, "suppressedCandidateCount", 0] call CAI_fnc_getKV;
+private _groupedCount = [CAI_lastWorldModelSummary, "groupedCandidateCount", 0] call CAI_fnc_getKV;
+private _groupCount = [CAI_lastWorldModelSummary, "objectiveGroupCount", 0] call CAI_fnc_getKV;
 private _summaryDensity = [CAI_lastWorldModelSummary, "density", _density] call CAI_fnc_getKV;
 
 ["[CAI WORLD]", format [
-    "Runtime world model initialized. Candidates: %1. Eligible: %2. Seeded objectives: %3. Density: %4.",
+    "Runtime world model initialized. Candidates: %1. Eligible: %2. Seeded objectives: %3. Custom: %4. Derived: %5. Suppressed: %6. Grouped: %7 into %8 group(s). Density: %9.",
     _sourceCount,
     _eligibleCount,
     _seededCount,
+    _customCount,
+    _derivedCount,
+    _suppressedCount,
+    _groupedCount,
+    _groupCount,
     _summaryDensity
 ]] call CAI_fnc_log;
 

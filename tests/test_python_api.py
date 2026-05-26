@@ -167,7 +167,15 @@ class PythonApiTests(unittest.TestCase):
         )
         return self.api.add_map_index_batch(batch)
 
-    def world_payload(self, index_path=None, density="BALANCED", minimum_score=40, world_name="VR", world_size=8192):
+    def world_payload(
+        self,
+        index_path=None,
+        density="BALANCED",
+        minimum_score=40,
+        world_name="VR",
+        world_size=8192,
+        custom_objectives=None,
+    ):
         return sqf_payload(
             missionRoot=str(self.mission_root),
             indexPath=str(index_path or self.output_path),
@@ -177,6 +185,7 @@ class PythonApiTests(unittest.TestCase):
             density=density,
             minimumScore=minimum_score,
             debugMarkers=True,
+            customObjectives=custom_objectives or [],
         )
 
     def write_world_index(self, candidates, schema_version=2, world_name="VR", world_size=8192):
@@ -199,18 +208,40 @@ class PythonApiTests(unittest.TestCase):
         }
         self.output_path.write_text(json.dumps(data), encoding="utf-8")
 
-    def candidate(self, candidate_id, score, position, source_type="NameVillage", name=""):
+    def candidate(self, candidate_id, score, position, source_type="NameVillage", name=None, candidate_type="settlement"):
         return {
             "candidateId": candidate_id,
-            "candidateType": "settlement",
+            "candidateType": candidate_type,
             "sourceId": candidate_id.replace("cand_", "source_"),
             "sourceType": source_type,
-            "name": name or candidate_id,
+            "name": candidate_id if name is None else name,
             "position": position,
             "score": score,
             "objectiveEligible": True,
             "reasons": ["test candidate"],
         }
+
+    def custom_objective(
+        self,
+        custom_id,
+        name,
+        position,
+        radius=300,
+        objective_type="military",
+        description="fob",
+        owner="NONE",
+        significance="MEDIUM",
+    ):
+        return sqf_payload(
+            customObjectiveId=custom_id,
+            name=name,
+            objectiveType=objective_type,
+            objectiveDescription=description,
+            radius=radius,
+            initialOwner=owner,
+            significance=significance,
+            position=position,
+        )
 
     def test_pythia_marker_and_ping(self):
         self.assertEqual((PYTHON_CODE / "$PYTHIA$").read_text(encoding="utf-8").strip(), "CAIPython")
@@ -422,13 +453,236 @@ class PythonApiTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("spread_") for item in source_ids))
 
     def test_world_model_relaxes_spacing_to_reach_target(self):
-        candidates = [self.candidate(f"cand_close_{index:03d}", 90 - index, [100 + index, 100 + index, 0]) for index in range(1, 20)]
+        candidates = [self.candidate(f"cand_close_{index:03d}", 90 - index, [100 + index * 250, 100, 0]) for index in range(1, 20)]
         self.write_world_index(candidates)
         response = self.api.init_world_model(self.world_payload())
         self.assertTrue(response[0], response)
         summary = from_sqf_payload(response[2])
         self.assertEqual(summary["targetObjectiveCount"], 17)
         self.assertEqual(summary["seededObjectiveCount"], 17)
+
+    def test_world_model_groups_same_kind_candidates_within_100m(self):
+        candidates = [
+            self.candidate("tower_a", 90, [100, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+            self.candidate("tower_b", 89, [180, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload())
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objectives = self.package.api.world_model.export_world_model()["objectives"]
+        self.assertEqual(summary["groupedCandidateCount"], 1)
+        self.assertEqual(summary["objectiveGroupCount"], 1)
+        self.assertEqual(summary["seededObjectiveCount"], 1)
+        self.assertEqual(objectives[0]["sourceType"], "TRANSMITTER")
+        self.assertEqual(objectives[0]["mergedCandidateCount"], 2)
+        self.assertEqual(objectives[0]["mergedCandidateIds"], ["tower_a", "tower_b"])
+        self.assertEqual(objectives[0]["position"], [140.0, 100.0, 0.0])
+
+        marker_response = self.api.get_world_debug_markers(sqf_payload(limit=10))
+        marker_payload = from_sqf_payload(marker_response[2])
+        self.assertTrue(marker_payload["markers"][0]["markerText"].endswith("TRANSMITTER x2"))
+
+    def test_world_model_groups_mixed_candidates_within_200m_using_highest_score_identity(self):
+        candidates = [
+            self.candidate("tower_a", 90, [100, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+            self.candidate("fuel_a", 70, [250, 100, 0], source_type="FUELSTATION", name="", candidate_type="logistics"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload())
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objective = self.package.api.world_model.export_world_model()["objectives"][0]
+        self.assertEqual(summary["groupedCandidateCount"], 1)
+        self.assertEqual(summary["objectiveGroupCount"], 1)
+        self.assertEqual(objective["sourceCandidateId"], "tower_a")
+        self.assertEqual(objective["sourceType"], "TRANSMITTER")
+        self.assertEqual(objective["score"], 90)
+        self.assertEqual(objective["position"], [175.0, 100.0, 0.0])
+        self.assertEqual(objective["mergedSourceTypes"], ["FUELSTATION", "TRANSMITTER"])
+        self.assertEqual(objective["groupingMode"], "mixed")
+
+    def test_world_model_keeps_candidates_outside_group_thresholds_separate(self):
+        candidates = [
+            self.candidate("tower_a", 90, [100, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+            self.candidate("fuel_a", 70, [350, 100, 0], source_type="FUELSTATION", name="", candidate_type="logistics"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload())
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objectives = self.package.api.world_model.export_world_model()["objectives"]
+        self.assertEqual(summary["groupedCandidateCount"], 0)
+        self.assertEqual(summary["objectiveGroupCount"], 0)
+        self.assertEqual(summary["seededObjectiveCount"], 2)
+        self.assertTrue(all("mergedCandidateCount" not in item for item in objectives))
+
+    def test_custom_suppression_runs_before_derived_grouping(self):
+        candidates = [
+            self.candidate("near_custom", 95, [150, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+            self.candidate("tower_a", 90, [800, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+            self.candidate("tower_b", 89, [860, 100, 0], source_type="TRANSMITTER", name="", candidate_type="communications"),
+        ]
+        custom = [
+            self.custom_objective("custom_hq", "Custom HQ", [100, 100, 0], radius=300, description="other", significance="HIGH"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload(custom_objectives=custom))
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objectives = self.package.api.world_model.export_world_model()["objectives"]
+        self.assertEqual(summary["suppressedCandidateCount"], 1)
+        self.assertEqual(summary["groupedCandidateCount"], 1)
+        self.assertEqual(summary["objectiveGroupCount"], 1)
+        self.assertEqual(summary["seededObjectiveCount"], 2)
+        self.assertTrue(objectives[0]["isCustom"])
+        self.assertNotIn("mergedCandidateCount", objectives[0])
+
+    def test_custom_objectives_seed_before_derived_objectives(self):
+        candidates = [self.candidate(f"cand_{index:03d}", 95 - index, [3000 + index * 800, 3000, 0]) for index in range(1, 8)]
+        custom = [
+            self.custom_objective("custom_alpha", "Alpha FOB", [100, 100, 0], owner="WEST", significance="LOW"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload(custom_objectives=custom, minimum_score=80))
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objectives = self.package.api.world_model.export_world_model()["objectives"]
+        self.assertEqual(summary["customObjectiveCount"], 1)
+        self.assertEqual(objectives[0]["objectiveId"], "obj_custom_001")
+        self.assertTrue(objectives[0]["isCustom"])
+        self.assertEqual(objectives[0]["sourceCandidateId"], "custom_alpha")
+        self.assertTrue(all(item["score"] >= 80 for item in objectives[1:]))
+
+    def test_custom_objectives_suppress_nearby_derived_candidates(self):
+        candidates = [
+            self.candidate("near_custom", 95, [150, 150, 0]),
+            self.candidate("far_from_custom", 85, [3000, 3000, 0]),
+        ]
+        custom = [
+            self.custom_objective("custom_hq", "Custom HQ", [100, 100, 0], radius=500, significance="HIGH"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload(custom_objectives=custom))
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objectives = self.package.api.world_model.export_world_model()["objectives"]
+        source_ids = {item["sourceCandidateId"] for item in objectives}
+        self.assertEqual(summary["suppressedCandidateCount"], 1)
+        self.assertNotIn("near_custom", source_ids)
+        self.assertIn("far_from_custom", source_ids)
+
+    def test_custom_airfield_suppresses_nearby_support_candidates(self):
+        candidates = [
+            self.candidate("airfield_transmitter_1", 90, [900, 0, 0], source_type="TRANSMITTER"),
+            self.candidate("airfield_transmitter_2", 89, [1400, 250, 0], source_type="TRANSMITTER"),
+            self.candidate("airfield_label", 88, [1000, 400, 0], source_type="NameLocal", name="Test Airfield"),
+            self.candidate("far_transmitter", 88, [2600, 0, 0], source_type="TRANSMITTER"),
+            self.candidate("near_village", 86, [1200, -300, 0], source_type="NameVillage"),
+            self.candidate("far_village", 87, [3600, 0, 0], source_type="NameVillage"),
+        ]
+        custom = [
+            self.custom_objective(
+                "custom_airfield",
+                "Custom Airfield",
+                [0, 0, 0],
+                radius=300,
+                description="airfield",
+                significance="HIGH",
+            ),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload(custom_objectives=custom, minimum_score=80))
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        objectives = self.package.api.world_model.export_world_model()["objectives"]
+        source_ids = {item["sourceCandidateId"] for item in objectives}
+        custom_objective = objectives[0]
+
+        self.assertEqual(custom_objective["radius"], 300)
+        self.assertEqual(custom_objective["suppressionRadius"], 2000)
+        self.assertEqual(summary["suppressedCandidateCount"], 3)
+        self.assertNotIn("airfield_transmitter_1", source_ids)
+        self.assertNotIn("airfield_transmitter_2", source_ids)
+        self.assertNotIn("airfield_label", source_ids)
+        self.assertIn("far_transmitter", source_ids)
+        self.assertIn("near_village", source_ids)
+        self.assertIn("far_village", source_ids)
+
+    def test_custom_objectives_reserve_slots_then_derived_fill_remaining_target(self):
+        candidates = [
+            self.candidate(f"cand_{index:03d}", 95 - (index % 20), [2500 + (index % 8) * 1000, 2500 + (index // 8) * 1000, 0])
+            for index in range(1, 31)
+        ]
+        custom = [
+            self.custom_objective("custom_1", "Custom One", [100, 100, 0], significance="HIGH"),
+            self.custom_objective("custom_2", "Custom Two", [100, 1200, 0], significance="MEDIUM"),
+        ]
+        self.write_world_index(candidates)
+        response = self.api.init_world_model(self.world_payload(custom_objectives=custom))
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        self.assertEqual(summary["targetObjectiveCount"], 17)
+        self.assertEqual(summary["customObjectiveCount"], 2)
+        self.assertEqual(summary["derivedObjectiveCount"], 15)
+        self.assertEqual(summary["seededObjectiveCount"], 17)
+
+    def test_custom_objectives_can_exceed_target_without_being_dropped(self):
+        custom = [
+            self.custom_objective(f"custom_{index:03d}", f"Custom {index:03d}", [index * 200, 100, 0], significance="LOW")
+            for index in range(1, 16)
+        ]
+        self.write_world_index([], world_size=8192)
+        response = self.api.init_world_model(self.world_payload(custom_objectives=custom))
+        self.assertTrue(response[0], response)
+
+        summary = from_sqf_payload(response[2])
+        self.assertEqual(summary["targetObjectiveCount"], 15)
+        self.assertEqual(summary["customObjectiveCount"], 15)
+        self.assertEqual(summary["derivedObjectiveCount"], 0)
+        self.assertEqual(summary["seededObjectiveCount"], 15)
+
+    def test_custom_objective_fields_and_markers_are_preserved(self):
+        custom = [
+            self.custom_objective(
+                "custom_power",
+                "Power Station",
+                [500, 600, 0],
+                radius=750,
+                objective_type="industrial",
+                description="power_plant",
+                owner="EAST",
+                significance="HIGH",
+            ),
+        ]
+        self.write_world_index([])
+        self.assertTrue(self.api.init_world_model(self.world_payload(custom_objectives=custom))[0])
+
+        objective = self.package.api.world_model.export_world_model()["objectives"][0]
+        self.assertEqual(objective["objectiveType"], "industrial")
+        self.assertEqual(objective["objectiveDescription"], "power_plant")
+        self.assertEqual(objective["radius"], 750)
+        self.assertEqual(objective["suppressionRadius"], 1000)
+        self.assertEqual(objective["initialOwner"], "EAST")
+        self.assertEqual(objective["owner"], "EAST")
+        self.assertEqual(objective["control"], 100)
+        self.assertEqual(objective["priority"], 95)
+        self.assertTrue(objective["isCustom"])
+
+        response = self.api.get_world_debug_markers(sqf_payload(limit=10))
+        payload = from_sqf_payload(response[2])
+        marker = payload["markers"][0]
+        self.assertEqual(marker["kind"], "custom_objective")
+        self.assertEqual(marker["markerColor"], "ColorRed")
+        self.assertTrue(marker["markerText"].startswith("CAI CUSTOM 95"))
 
 
 if __name__ == "__main__":

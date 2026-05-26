@@ -14,6 +14,8 @@ The first Core feature is the `Campaign AI Map Indexer` Eden module. A mission m
 
 The second Core feature is the `Campaign AI World Model` Eden module. It reads a completed schema-2 map index, seeds Python-owned neutral runtime objectives with map-scaled score-and-spread selection, and can draw debug markers for the actual seeded objectives.
 
+Mission makers can also place `Campaign AI Custom Objective` modules. Custom objectives are seeded before index-derived objectives, suppress nearby derived duplicates, and preserve mission-maker ownership/significance metadata for future commander systems. Airfield custom objectives use a wider runtime support footprint so nearby towers and support sites are treated as part of the airfield instead of separate objectives. Runtime world-model seeding also groups overlapping derived candidates so compact compounds are represented by one objective marker.
+
 ## Load Order
 
 ```text

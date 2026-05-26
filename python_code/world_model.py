@@ -27,6 +27,71 @@ DENSITY_PROFILES = {
     "BALANCED": DensityProfile(minimum=12, maximum=120, km2_per_objective=4.0, spacing=1400.0),
     "DENSE": DensityProfile(minimum=20, maximum=180, km2_per_objective=2.75, spacing=1000.0),
 }
+SAME_KIND_GROUP_RADIUS = 100.0
+MIXED_KIND_GROUP_RADIUS = 200.0
+
+SIGNIFICANCE_SCORES = {
+    "HIGH": 95,
+    "MEDIUM": 75,
+    "LOW": 55,
+}
+
+CUSTOM_OBJECTIVE_TYPES = {"military", "civilian", "industrial", "other"}
+CUSTOM_OBJECTIVE_DESCRIPTIONS = {
+    "fob",
+    "cop",
+    "airfield",
+    "power_plant",
+    "dam",
+    "religious_site",
+    "tv_radio_station",
+    "port",
+    "depot",
+    "factory",
+    "hospital",
+    "town_center",
+    "bridge",
+    "road_junction",
+    "observation_post",
+    "other",
+}
+OWNER_ALIASES = {
+    "GUER": "INDEPENDENT",
+    "GUERRILA": "INDEPENDENT",
+    "GUERRILLA": "INDEPENDENT",
+    "RESISTANCE": "INDEPENDENT",
+}
+VALID_OWNERS = {"EAST", "WEST", "INDEPENDENT", "CIVILIAN", "NONE"}
+CUSTOM_SUPPRESSION_MIN_RADIUS = {
+    "airfield": 2000.0,
+    "port": 1200.0,
+    "power_plant": 1000.0,
+    "factory": 900.0,
+    "depot": 900.0,
+    "fob": 750.0,
+    "cop": 600.0,
+    "tv_radio_station": 600.0,
+}
+CUSTOM_SUPPORT_CANDIDATE_TYPES = {
+    "airfield": {"communications", "infrastructure", "logistics", "military", "transport_corridor"},
+    "port": {"communications", "infrastructure", "logistics", "transport_corridor"},
+    "power_plant": {"communications", "infrastructure", "logistics"},
+    "factory": {"communications", "infrastructure", "logistics"},
+    "depot": {"communications", "infrastructure", "logistics", "military", "transport_corridor"},
+    "fob": {"communications", "infrastructure", "military", "observation"},
+    "cop": {"communications", "infrastructure", "military", "observation"},
+    "tv_radio_station": {"communications", "infrastructure"},
+}
+CUSTOM_SUPPORT_SOURCE_TYPES = {
+    "TRANSMITTER",
+    "VIEW-TOWER",
+    "VIEWTOWER",
+    "WATERTOWER",
+    "FUELSTATION",
+    "BUNKER",
+    "FORTRESS",
+    "RADAR",
+}
 
 
 @dataclass
@@ -43,6 +108,11 @@ class WorldModelState:
     source_candidate_count: int = 0
     eligible_candidate_count: int = 0
     target_objective_count: int = 0
+    custom_objective_count: int = 0
+    derived_objective_count: int = 0
+    suppressed_candidate_count: int = 0
+    grouped_candidate_count: int = 0
+    objective_group_count: int = 0
 
 
 _STATE = WorldModelState()
@@ -60,15 +130,22 @@ def init_world_model(payload: Any) -> dict[str, Any]:
     mission = index_data.get("mission", {})
     world_size = as_float(world.get("worldSize"), as_float(data.get("worldSize"), 0.0))
 
+    custom_inputs = _normalize_custom_objectives(data.get("customObjectives", []))
+    custom_objectives = _build_custom_runtime_objectives(custom_inputs)
+
     candidates = [
         item
         for item in _as_dict_list(index_data.get("objectiveCandidates", []))
         if item.get("objectiveEligible", False) and as_float(item.get("score"), 0.0) >= minimum_score
     ]
     sorted_candidates = sorted(candidates, key=lambda item: (-as_float(item.get("score"), 0.0), str(item.get("candidateId", ""))))
-    target_count = _target_objective_count(world_size, density, len(sorted_candidates))
-    selected = _select_score_and_spread(sorted_candidates, target_count, world_size, density)
-    objectives = _build_runtime_objectives(selected)
+    unsuppressed_candidates, suppressed_count = _suppress_candidates_near_custom_objectives(sorted_candidates, custom_objectives)
+    grouped_candidates, grouped_candidate_count, objective_group_count = _group_objective_candidates(unsuppressed_candidates)
+    target_count = _target_objective_count(world_size, density, len(custom_objectives) + len(grouped_candidates))
+    derived_slots = max(0, target_count - len(custom_objectives))
+    selected = _select_score_and_spread(grouped_candidates, derived_slots, world_size, density)
+    derived_objectives = _build_derived_runtime_objectives(selected)
+    objectives = custom_objectives + derived_objectives
 
     global _STATE
     _STATE = WorldModelState(
@@ -84,6 +161,11 @@ def init_world_model(payload: Any) -> dict[str, Any]:
         source_candidate_count=len(_as_dict_list(index_data.get("objectiveCandidates", []))),
         eligible_candidate_count=len(sorted_candidates),
         target_objective_count=target_count,
+        custom_objective_count=len(custom_objectives),
+        derived_objective_count=len(derived_objectives),
+        suppressed_candidate_count=suppressed_count,
+        grouped_candidate_count=grouped_candidate_count,
+        objective_group_count=objective_group_count,
     )
 
     return get_world_model_summary()
@@ -104,6 +186,11 @@ def get_world_model_summary() -> dict[str, Any]:
         "eligibleCandidateCount": _STATE.eligible_candidate_count,
         "targetObjectiveCount": _STATE.target_objective_count,
         "seededObjectiveCount": len(_STATE.objectives),
+        "customObjectiveCount": _STATE.custom_objective_count,
+        "derivedObjectiveCount": _STATE.derived_objective_count,
+        "suppressedCandidateCount": _STATE.suppressed_candidate_count,
+        "groupedCandidateCount": _STATE.grouped_candidate_count,
+        "objectiveGroupCount": _STATE.objective_group_count,
         "initializedAtUtc": _STATE.initialized_at_utc,
     }
 
@@ -237,7 +324,270 @@ def _is_spread_enough(candidate: dict[str, Any], selected: list[dict[str, Any]],
     return all(_distance_2d(position, _position(item.get("position"))) >= spacing for item in selected)
 
 
-def _build_runtime_objectives(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _group_objective_candidates(candidates: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
+    same_kind_groups = _cluster_candidate_groups(
+        candidates,
+        SAME_KIND_GROUP_RADIUS,
+        group_mode="same_kind",
+        require_same_kind=True,
+    )
+    same_kind_candidates = [_merge_candidate_group(group, "same_kind", SAME_KIND_GROUP_RADIUS) for group in same_kind_groups]
+    mixed_groups = _cluster_candidate_groups(
+        same_kind_candidates,
+        MIXED_KIND_GROUP_RADIUS,
+        group_mode="mixed",
+        require_same_kind=False,
+    )
+    grouped_candidates = [_merge_candidate_group(group, "mixed", MIXED_KIND_GROUP_RADIUS) for group in mixed_groups]
+    grouped_candidates = sorted(grouped_candidates, key=lambda item: (-as_float(item.get("score"), 0.0), str(item.get("candidateId", ""))))
+    grouped_candidate_count = max(0, len(candidates) - len(grouped_candidates))
+    objective_group_count = sum(1 for item in grouped_candidates if as_int(item.get("mergedCandidateCount"), 1) > 1)
+    return grouped_candidates, grouped_candidate_count, objective_group_count
+
+
+def _cluster_candidate_groups(
+    candidates: list[dict[str, Any]],
+    threshold: float,
+    group_mode: str,
+    require_same_kind: bool,
+) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    sorted_candidates = sorted(candidates, key=lambda item: (-as_float(item.get("score"), 0.0), str(item.get("candidateId", ""))))
+
+    for candidate in sorted_candidates:
+        position = _position(candidate.get("position"))
+        candidate_key = _candidate_kind_key(candidate)
+        nearest_index = -1
+        nearest_distance = threshold
+        for index, group in enumerate(groups):
+            if require_same_kind and group["kindKey"] != candidate_key:
+                continue
+            distance = _distance_2d(position, group["position"])
+            if distance <= nearest_distance:
+                nearest_index = index
+                nearest_distance = distance
+
+        if nearest_index < 0:
+            weight = _candidate_group_weight(candidate)
+            groups.append(
+                {
+                    "items": [candidate],
+                    "position": position,
+                    "sourceWeight": weight,
+                    "kindKey": candidate_key if require_same_kind else group_mode,
+                }
+            )
+        else:
+            group = groups[nearest_index]
+            weight = _candidate_group_weight(candidate)
+            old_weight = as_int(group.get("sourceWeight"), 1)
+            total_weight = old_weight + weight
+            group["position"] = [
+                ((group["position"][0] * old_weight) + (position[0] * weight)) / total_weight,
+                ((group["position"][1] * old_weight) + (position[1] * weight)) / total_weight,
+                ((group["position"][2] * old_weight) + (position[2] * weight)) / total_weight,
+            ]
+            group["sourceWeight"] = total_weight
+            group["items"].append(candidate)
+
+    return groups
+
+
+def _merge_candidate_group(group: dict[str, Any], group_mode: str, threshold: float) -> dict[str, Any]:
+    items = sorted(group["items"], key=lambda item: (-as_float(item.get("score"), 0.0), str(item.get("candidateId", ""))))
+    best = deepcopy(items[0])
+    if len(items) == 1:
+        return best
+    merged_ids = _merged_candidate_ids(items)
+    source_types = sorted({str(item.get("sourceType") or "UNKNOWN") for item in _flatten_group_items(items)})
+    candidate_types = sorted({str(item.get("candidateType") or "generic") for item in _flatten_group_items(items)})
+    merged_count = len(merged_ids)
+    if merged_count <= 1:
+        return best
+
+    reasons = [str(item) for item in from_sqf(best.get("reasons", [])) if str(item)]
+    reasons.append(f"Grouped {merged_count} nearby objectives within {round(threshold)}m ({group_mode.replace('_', ' ')})")
+    best["position"] = _position(group.get("position"))
+    best["mergedCandidateCount"] = merged_count
+    best["mergedCandidateIds"] = merged_ids
+    best["mergedSourceTypes"] = source_types
+    best["mergedCandidateTypes"] = candidate_types
+    best["groupingMode"] = group_mode
+    best["groupingRadius"] = round(threshold)
+    best["reasons"] = reasons
+    return best
+
+
+def _flatten_group_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened = []
+    for item in items:
+        nested_items = item.get("mergedCandidateItems")
+        if isinstance(nested_items, list):
+            flattened.extend([nested for nested in nested_items if isinstance(nested, dict)])
+        else:
+            flattened.append(item)
+    return flattened
+
+
+def _merged_candidate_ids(items: list[dict[str, Any]]) -> list[str]:
+    merged_ids = []
+    for item in items:
+        raw_ids = from_sqf(item.get("mergedCandidateIds", []))
+        ids = raw_ids if isinstance(raw_ids, list) and raw_ids else [item.get("candidateId", "")]
+        for candidate_id in ids:
+            candidate_id = str(candidate_id)
+            if candidate_id and candidate_id not in merged_ids:
+                merged_ids.append(candidate_id)
+    return merged_ids
+
+
+def _candidate_group_weight(candidate: dict[str, Any]) -> int:
+    return max(1, as_int(candidate.get("mergedCandidateCount"), 1))
+
+
+def _candidate_kind_key(candidate: dict[str, Any]) -> tuple[str, str]:
+    return (str(candidate.get("candidateType") or "generic"), str(candidate.get("sourceType") or "UNKNOWN"))
+
+
+def _normalize_custom_objectives(value: Any) -> list[dict[str, Any]]:
+    custom_items = _as_dict_list(value)
+    normalized = []
+    for index, item in enumerate(custom_items, start=1):
+        custom_id = str(item.get("customObjectiveId") or f"custom_objective_{index:03d}")
+        objective_type = str(item.get("objectiveType") or "other").lower()
+        if objective_type not in CUSTOM_OBJECTIVE_TYPES:
+            objective_type = "other"
+
+        description = str(item.get("objectiveDescription") or "other").lower()
+        if description not in CUSTOM_OBJECTIVE_DESCRIPTIONS:
+            description = "other"
+
+        significance = str(item.get("significance") or "MEDIUM").upper()
+        if significance not in SIGNIFICANCE_SCORES:
+            significance = "MEDIUM"
+
+        owner = _normalize_owner(item.get("initialOwner"))
+        radius = max(100, min(round(as_float(item.get("radius"), 300.0)), 1000))
+        suppression_radius = _custom_suppression_radius(description, radius)
+        position = _position(item.get("position"))
+        name = str(item.get("name") or "").strip() or f"Custom Objective {index:03d}"
+        normalized.append(
+            {
+                "customObjectiveId": custom_id,
+                "name": name,
+                "objectiveType": objective_type,
+                "objectiveDescription": description,
+                "radius": radius,
+                "suppressionRadius": suppression_radius,
+                "initialOwner": owner,
+                "significance": significance,
+                "score": SIGNIFICANCE_SCORES[significance],
+                "position": position,
+            }
+        )
+
+    return sorted(
+        normalized,
+        key=lambda item: (
+            -int(item["score"]),
+            str(item["name"]).lower(),
+            float(item["position"][0]),
+            float(item["position"][1]),
+            str(item["customObjectiveId"]),
+        ),
+    )
+
+
+def _normalize_owner(value: Any) -> str:
+    owner = str(value or "NONE").upper()
+    owner = OWNER_ALIASES.get(owner, owner)
+    return owner if owner in VALID_OWNERS else "NONE"
+
+
+def _custom_suppression_radius(description: str, radius: int) -> int:
+    minimum = CUSTOM_SUPPRESSION_MIN_RADIUS.get(description, float(radius))
+    return round(max(float(radius), minimum))
+
+
+def _build_custom_runtime_objectives(custom_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    objectives = []
+    for index, item in enumerate(custom_items, start=1):
+        score = as_float(item.get("score"), 75.0)
+        owner = str(item.get("initialOwner") or "NONE")
+        radius = as_int(item.get("radius"), 300)
+        suppression_radius = as_int(item.get("suppressionRadius"), radius)
+        reasons = [
+            "Custom objective placed in Eden",
+            f"Significance {item.get('significance', 'MEDIUM')}",
+        ]
+        if suppression_radius > radius:
+            reasons.append(f"{item.get('objectiveDescription', 'other')} support footprint {suppression_radius}m")
+        objectives.append(
+            {
+                "objectiveId": f"obj_custom_{index:03d}",
+                "name": str(item.get("name") or f"Custom Objective {index:03d}"),
+                "objectiveType": str(item.get("objectiveType") or "other"),
+                "objectiveDescription": str(item.get("objectiveDescription") or "other"),
+                "sourceCandidateId": str(item.get("customObjectiveId") or ""),
+                "sourceType": "CUSTOM",
+                "position": _position(item.get("position")),
+                "radius": radius,
+                "suppressionRadius": suppression_radius,
+                "priority": round(score),
+                "score": round(score, 2),
+                "tier": _objective_tier(score),
+                "initialOwner": owner,
+                "owner": owner,
+                "control": 0 if owner == "NONE" else 100,
+                "significance": str(item.get("significance") or "MEDIUM"),
+                "isCustom": True,
+                "reasons": reasons,
+                "reasonText": "; ".join(reasons),
+            }
+        )
+    return objectives
+
+
+def _suppress_candidates_near_custom_objectives(
+    candidates: list[dict[str, Any]],
+    custom_objectives: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    if not custom_objectives:
+        return candidates, 0
+
+    kept = []
+    suppressed_count = 0
+    for candidate in candidates:
+        if any(_should_suppress_candidate_for_custom(candidate, custom) for custom in custom_objectives):
+            suppressed_count += 1
+            continue
+        kept.append(candidate)
+
+    return kept, suppressed_count
+
+
+def _should_suppress_candidate_for_custom(candidate: dict[str, Any], custom: dict[str, Any]) -> bool:
+    distance = _distance_2d(_position(candidate.get("position")), _position(custom.get("position")))
+    radius = as_float(custom.get("radius"), 300.0)
+    if distance <= radius:
+        return True
+
+    support_radius = as_float(custom.get("suppressionRadius"), radius)
+    return distance <= support_radius and _is_support_candidate_for_custom(candidate, custom)
+
+
+def _is_support_candidate_for_custom(candidate: dict[str, Any], custom: dict[str, Any]) -> bool:
+    description = str(custom.get("objectiveDescription") or "other").lower()
+    candidate_type = str(candidate.get("candidateType") or "").lower()
+    source_type = str(candidate.get("sourceType") or "").upper()
+    candidate_name = str(candidate.get("name") or "").lower()
+    support_types = CUSTOM_SUPPORT_CANDIDATE_TYPES.get(description, set())
+    if description == "airfield" and ("airfield" in candidate_name or "airport" in candidate_name or source_type == "AIRPORT"):
+        return True
+    return candidate_type in support_types or source_type in CUSTOM_SUPPORT_SOURCE_TYPES
+
+
+def _build_derived_runtime_objectives(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sorted_selected = sorted(candidates, key=lambda item: (-as_float(item.get("score"), 0.0), str(item.get("candidateId", ""))))
     objectives = []
     for index, candidate in enumerate(sorted_selected, start=1):
@@ -246,25 +596,34 @@ def _build_runtime_objectives(candidates: list[dict[str, Any]]) -> list[dict[str
         candidate_type = str(candidate.get("candidateType") or "generic")
         name = str(candidate.get("name") or source_type or f"Objective {index}")
         reasons = [str(item) for item in from_sqf(candidate.get("reasons", [])) if str(item)]
-        objectives.append(
-            {
-                "objectiveId": f"obj_seed_{index:03d}",
-                "name": name,
-                "objectiveType": _objective_type(candidate_type, source_type),
-                "sourceCandidateId": str(candidate.get("candidateId") or ""),
-                "sourceType": source_type,
-                "position": _position(candidate.get("position")),
-                "radius": _objective_radius(candidate_type, source_type, score),
-                "priority": round(score),
-                "score": round(score, 2),
-                "tier": _objective_tier(score),
-                "initialOwner": "NONE",
-                "owner": "NONE",
-                "control": 0,
-                "reasons": reasons,
-                "reasonText": "; ".join(reasons[:3]),
-            }
-        )
+        objective = {
+            "objectiveId": f"obj_seed_{index:03d}",
+            "name": name,
+            "objectiveType": _objective_type(candidate_type, source_type),
+            "sourceCandidateId": str(candidate.get("candidateId") or ""),
+            "sourceType": source_type,
+            "position": _position(candidate.get("position")),
+            "radius": _objective_radius(candidate_type, source_type, score),
+            "priority": round(score),
+            "score": round(score, 2),
+            "tier": _objective_tier(score),
+            "initialOwner": "NONE",
+            "owner": "NONE",
+            "control": 0,
+            "isCustom": False,
+            "reasons": reasons,
+            "reasonText": "; ".join(reasons[:3]),
+        }
+        merged_count = as_int(candidate.get("mergedCandidateCount"), 1)
+        if merged_count > 1:
+            objective["mergedCandidateCount"] = merged_count
+            objective["mergedCandidateIds"] = from_sqf(candidate.get("mergedCandidateIds", []))
+            objective["mergedSourceTypes"] = from_sqf(candidate.get("mergedSourceTypes", []))
+            objective["mergedCandidateTypes"] = from_sqf(candidate.get("mergedCandidateTypes", []))
+            objective["groupingMode"] = str(candidate.get("groupingMode") or "")
+            objective["groupingRadius"] = as_int(candidate.get("groupingRadius"), 0)
+            objective["reasonText"] = "; ".join(reasons[:2] + reasons[-1:])
+        objectives.append(objective)
     return objectives
 
 
@@ -305,17 +664,22 @@ def _objective_marker(objective: dict[str, Any]) -> dict[str, Any]:
     tier = str(objective.get("tier") or "local")
     priority = as_int(objective.get("priority"), 0)
     name = str(objective.get("name") or objective_id)
+    is_custom = bool(objective.get("isCustom", False))
+    merged_count = as_int(objective.get("mergedCandidateCount"), 1)
+    grouped_suffix = f" x{merged_count}" if (not is_custom and merged_count > 1) else ""
     return {
         "markerId": f"CAI_WORLD_{objective_id.upper()}",
-        "kind": "seeded_objective",
+        "kind": "custom_objective" if is_custom else "seeded_objective",
         "objectiveId": objective_id,
         "position": _position(objective.get("position")),
         "markerType": "mil_objective",
-        "markerColor": _tier_marker_color(tier),
-        "markerText": f"CAI OBJ {priority} {name}"[:63],
+        "markerColor": _owner_marker_color(str(objective.get("owner") or "NONE")) if is_custom else _tier_marker_color(tier),
+        "markerText": (f"CAI CUSTOM {priority} {name}" if is_custom else f"CAI OBJ {priority} {name}{grouped_suffix}")[:63],
         "tier": tier,
         "priority": priority,
         "score": as_float(objective.get("score"), 0.0),
+        "isCustom": is_custom,
+        "mergedCandidateCount": merged_count,
     }
 
 
@@ -327,6 +691,16 @@ def _tier_marker_color(tier: str) -> str:
     if tier == "minor":
         return "ColorYellow"
     return "ColorGreen"
+
+
+def _owner_marker_color(owner: str) -> str:
+    if owner == "EAST":
+        return "ColorRed"
+    if owner == "WEST":
+        return "ColorBlue"
+    if owner == "INDEPENDENT":
+        return "ColorGreen"
+    return "ColorWhite"
 
 
 def _as_dict_list(value: Any) -> list[dict[str, Any]]:

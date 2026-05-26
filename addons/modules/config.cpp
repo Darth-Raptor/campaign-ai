@@ -8,7 +8,8 @@ class CfgPatches {
         requiredAddons[] = {"cai_world", "A3_Modules_F"};
         units[] = {
             "CAI_ModuleMapIndexer",
-            "CAI_ModuleWorldModel"
+            "CAI_ModuleWorldModel",
+            "CAI_ModuleCustomObjective"
         };
         weapons[] = {};
     };
@@ -28,6 +29,7 @@ class CfgFunctions {
             file = "\x\cai\addons\modules\functions";
             class moduleMapIndexer {};
             class moduleWorldModel {};
+            class moduleCustomObjective {};
         };
     };
 };
@@ -198,6 +200,106 @@ class CfgVehicles {
                 tooltip = "Draws map markers for the actual seeded runtime objectives.";
                 defaultValue = "true";
                 expression = "_this setVariable ['CAI_debugMarkers', _value, true];";
+            };
+            class ModuleDescription: ModuleDescription {};
+        };
+    };
+
+    class CAI_ModuleCustomObjective: Module_F {
+        scope = 2;
+        scopeCurator = 0;
+        displayName = "Campaign AI Custom Objective";
+        category = "CAI_Modules";
+        function = "CAI_fnc_moduleCustomObjective";
+        functionPriority = 1;
+        isGlobal = 0;
+        isTriggerActivated = 0;
+        isDisposable = 0;
+
+        class Attributes: AttributesBase {
+            class CAI_objectiveName: Edit {
+                property = "CAI_customObjectiveName";
+                displayName = "Objective Name";
+                tooltip = "Human-readable name used in runtime reports and debug markers.";
+                defaultValue = """""";
+                expression = "_this setVariable ['CAI_objectiveName', _value, true];";
+            };
+            class CAI_objectiveType: Combo {
+                property = "CAI_customObjectiveType";
+                displayName = "Objective Type";
+                tooltip = "Broad objective category for future commander reasoning.";
+                defaultValue = """military""";
+                expression = "_this setVariable ['CAI_objectiveType', _value, true];";
+                class Values {
+                    class military { name = "Military"; value = "military"; default = 1; };
+                    class civilian { name = "Civilian"; value = "civilian"; };
+                    class industrial { name = "Industrial"; value = "industrial"; };
+                    class other { name = "Other"; value = "other"; };
+                };
+            };
+            class CAI_objectiveDescription: Combo {
+                property = "CAI_customObjectiveDescription";
+                displayName = "Objective Description";
+                tooltip = "Specific objective subtype for future commander reasoning.";
+                defaultValue = """fob""";
+                expression = "_this setVariable ['CAI_objectiveDescription', _value, true];";
+                class Values {
+                    class fob { name = "FOB"; value = "fob"; default = 1; };
+                    class cop { name = "COP"; value = "cop"; };
+                    class airfield { name = "Airfield"; value = "airfield"; };
+                    class power_plant { name = "Power Plant"; value = "power_plant"; };
+                    class dam { name = "Dam"; value = "dam"; };
+                    class religious_site { name = "Religious Site"; value = "religious_site"; };
+                    class tv_radio_station { name = "TV/Radio Station"; value = "tv_radio_station"; };
+                    class port { name = "Port"; value = "port"; };
+                    class depot { name = "Depot"; value = "depot"; };
+                    class factory { name = "Factory"; value = "factory"; };
+                    class hospital { name = "Hospital"; value = "hospital"; };
+                    class town_center { name = "Town Center"; value = "town_center"; };
+                    class bridge { name = "Bridge"; value = "bridge"; };
+                    class road_junction { name = "Road Junction"; value = "road_junction"; };
+                    class observation_post { name = "Observation Post"; value = "observation_post"; };
+                    class other { name = "Other"; value = "other"; };
+                };
+            };
+            class CAI_objectiveRadius: Slider {
+                property = "CAI_customObjectiveRadius";
+                displayName = "Objective Radius (m)";
+                tooltip = "Objective radius in meters from 100m to 1000m. Custom airfields also suppress nearby support infrastructure across a larger runtime footprint.";
+                defaultValue = "300";
+                typeName = "NUMBER";
+                expression = "private _caiValue = if (_value isEqualType 0) then {_value} else {private _caiText = if (_value isEqualType '') then {_value} else {str _value}; parseNumber _caiText}; if (_caiValue <= 1) then {_caiValue = 100 + (_caiValue * 900)}; _this setVariable ['CAI_objectiveRadius', round ((_caiValue max 100) min 1000), true];";
+                class Values {
+                    min = 100;
+                    max = 1000;
+                    step = 50;
+                };
+            };
+            class CAI_initialOwner: Combo {
+                property = "CAI_customInitialOwner";
+                displayName = "Initial Owner";
+                tooltip = "Stored as initial objective ownership for future commander and faction systems.";
+                defaultValue = """NONE""";
+                expression = "_this setVariable ['CAI_initialOwner', _value, true];";
+                class Values {
+                    class EAST { name = "EAST"; value = "EAST"; };
+                    class WEST { name = "WEST"; value = "WEST"; };
+                    class INDEPENDENT { name = "INDEPENDENT"; value = "INDEPENDENT"; };
+                    class CIVILIAN { name = "CIVILIAN"; value = "CIVILIAN"; };
+                    class NONE { name = "NONE"; value = "NONE"; default = 1; };
+                };
+            };
+            class CAI_significance: Combo {
+                property = "CAI_customSignificance";
+                displayName = "Objective Significance";
+                tooltip = "Mission-maker weighting for custom objective priority.";
+                defaultValue = """MEDIUM""";
+                expression = "_this setVariable ['CAI_significance', _value, true];";
+                class Values {
+                    class HIGH { name = "High"; value = "HIGH"; };
+                    class MEDIUM { name = "Medium"; value = "MEDIUM"; default = 1; };
+                    class LOW { name = "Low"; value = "LOW"; };
+                };
             };
             class ModuleDescription: ModuleDescription {};
         };
